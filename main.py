@@ -164,7 +164,7 @@ if __name__ == "__main__":
     p.add_argument('--pretraining-data-dir', action=fixPathAction, dest="pretraining_data_dir", default=None, help="Optional dir of extracted faceset that will be used in pretraining mode.")
     p.add_argument('--src-pak-name', required=False, dest='src_pak_name', type=str, default=None, help='Name of the src faceset pack to use')
     p.add_argument('--dst-pak-name', required=False, dest='dst_pak_name', type=str, default=None, help='Name of the dst faceset pack to use')
-    p.add_argument('--pretrained-model-dir', action=fixPathAction, dest="pretrained_model_dir", default=None, help="Optional dir of pretrain model files. (Currently only for Quick96).")
+    p.add_argument('--pretrained-model-dir', action=fixPathAction, dest="pretrained_model_dir", default=None, help="Optional dir of pretrain model files.")
     p.add_argument('--model-dir', required=True, action=fixPathAction, dest="model_dir", help="Saved models dir.")
     p.add_argument('--model', required=True, dest="model_name", choices=pathex.get_all_dir_names_startswith ( Path(__file__).parent / 'models' , 'Model_'), help="Model class name.")
     p.add_argument('--debug', action="store_true", dest="debug", default=False, help="Debug samples.")
@@ -197,14 +197,6 @@ if __name__ == "__main__":
     p.add_argument('--model', required=True, dest="model_name", choices=pathex.get_all_dir_names_startswith ( Path(__file__).parent / 'models' , 'Model_'), help="Model class name.")
     p.set_defaults (func=process_exportdfm)
 
-    def process_ampconverter(arguments):
-        from mainscripts import AmpConverter
-        AmpConverter.main(saved_models_path = Path(arguments.model_dir))
-
-    p = subparsers.add_parser( "ampconverter", help="Rename model files in order to be used with AMPModel. Only for AMP model.")
-    p.add_argument('--model-dir', required=True, action=fixPathAction, dest="model_dir", help="Saved models dir.")
-    p.set_defaults (func=process_ampconverter)
-    
     def process_merge(arguments):
         osex.set_process_lowest_prio()
         from mainscripts import Merger
