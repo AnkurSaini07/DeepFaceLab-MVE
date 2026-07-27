@@ -235,16 +235,29 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   territory — loss functions don't exist yet) and `mainscripts/Extractor.py`/inference-time
   integration.
 
-## Phase 6 — Deduplication / pose-balancing
-- Shared pipeline stage applied independently to `src` and `dst`:
-  perceptual hashing (near-duplicates) + ArcFace embedding similarity (same-pose-different-pixel
-  duplicates) + landmark-based pose clustering (bucketed by yaw/pitch/roll).
-- Cap clusters at ~3-5 representative frames (sharpest/best-aligned), not 1. At ~1-5k frames per
-  set, keep this conservative — don't dedup away pose/lighting coverage that's already scarce.
-- Feeds pose-bucket gaps identified for Section 8.2 (missing-pose generation) — dedup and
-  pose-balancing share the clustering stage per Section 5.3.
-- Exit: run on `dst` first (Section 5.4 priority), then `src`; report cluster count / frames
-  retained before/after as a sanity check.
+## Phase 6 — Deduplication / pose-balancing (mostly done)
+- Shared pipeline stage applied independently to `src` and `dst` (never against each other, per
+  Section 5.3 — nothing here pairs the two datasets).
+- **Done:** `dfl_torch/dedup.py` — `compute_dhash` (perceptual difference-hash, self-contained,
+  no `imagehash` package dependency), `cluster_by_hash` (union-find on Hamming distance),
+  `sharpness_score` (wraps `core.imagelib.estimate_sharpness`, Section 5.1's "reuse/extend DFL's
+  existing blur-sort" — **caught a real gotcha**: that function expects uint8 `[0, 255]` and
+  silently returns `0.0`, not an error, on float `[0, 1]` input, which would have made every
+  frame tie on sharpness and broken representative selection; the wrapper converts dtype before
+  calling it), `select_cluster_representatives` (keeps the N sharpest per cluster — Section 5.3's
+  cap of ~3-5, not 1), `deduplicate` (end-to-end), and `bucket_by_pose` (yaw/pitch bucketing,
+  ignoring roll as an in-plane framing detail rather than a distinct pose — shared with Section
+  5.2 pose-balancing per Section 5.3's "combine ... as one shared pipeline stage"). 12 tests in
+  `tests/test_dedup.py`.
+- **Not implemented:** ArcFace embedding similarity (Section 5.3's third near-duplicate signal,
+  for same-pose-different-pixel duplicates dHash won't catch) — needs an ArcFace model, same
+  category of heavier-dependency deferral as Phase 5's mic detector/SAM (InsightFace model zoo or
+  a standalone ONNX checkpoint, not pulled in yet).
+- **Not yet done:** actually running this against real `src`/`dst` footage (no real footage is
+  available in this dev environment — only synthetic test fixtures) — exit criteria below apply
+  once real data exists.
+- Exit (pending real data): run on `dst` first (Section 5.4 priority), then `src`; report cluster
+  count / frames retained before/after as a sanity check.
 
 ## Phase 7 — Loss functions
 - Add to SSIM+L1 baseline: LPIPS (VGG feature space), PatchGAN adversarial (using the Phase 1
