@@ -139,14 +139,26 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   `tests/fixtures/generate_face_fixture.py`).
 - Exit: 7/7 tests pass on CPU (`.venv-torch`); in-RAM cache path verified identical to non-cached.
 
-## Phase 3 — Precision (BF16 autocast)
-- Wrap forward+loss in `torch.autocast(device_type='cuda', dtype=torch.bfloat16)`; no
-  `GradScaler`. Master weights stay FP32.
-- Smoke test (Section 11.2): single forward/backward/optimizer step on dummy data, assert no NaN
-  loss and gradients flow — runs in FP32 on CPU (autocast is CUDA-only), BF16 path exercised only
-  once GPU is available.
-- Exit: smoke test passes on CPU; autocast branch code-reviewed but not yet runtime-validated
-  (needs GPU — flagged as a Phase 3 follow-up once hardware is available).
+## Phase 3 — Precision (BF16 autocast) (done)
+- `dfl_torch/precision.py`: `autocast_context(device_type)` wraps
+  `torch.autocast(device_type=device_type, dtype=torch.bfloat16)`; no `GradScaler` needed (bf16,
+  not fp16). Model weights stay FP32; only ops inside the context run in bf16.
+- **Correction to the original plan's assumption:** autocast is *not* CUDA-only — PyTorch's CPU
+  autocast supports bfloat16 too (via oneDNN), confirmed empirically (`tests/test_training_smoke.py`
+  runs `device_type='cpu'` and the generator's `rgb`/`mask` outputs come back as actual
+  `torch.bfloat16` tensors inside the context, `torch.float32` outside it). This means the
+  autocast code path itself is exercised on CPU, not just structurally present and
+  GPU-only-validated as originally planned — the only thing untested without a GPU is
+  CUDA-specific Tensor Core performance/numerics on Ada Lovelace, not correctness of the
+  autocast wiring.
+- Smoke test (Section 11.2, `tests/test_training_smoke.py`): full generator+discriminator forward
+  pass inside `autocast_context`, L1 losses (Section 9's baseline reconstruction term; the fuller
+  loss stack is Phase 7) + `.backward()` + `optimizer.step()` on dummy data. Asserts: master
+  weights are FP32 before training, ops run in bf16 inside the context, loss is finite FP32
+  (no NaN/Inf, no scaler needed), every parameter gets a non-NaN gradient, and weights remain
+  FP32 after the step (no accidental downcast).
+- Exit: 3/3 tests pass on CPU. Actual CUDA/Tensor-Core behavior on the target 4070 Ti SUPER still
+  needs real-GPU validation once available — that part genuinely can't be checked here.
 
 ## Phase 4 — Alignment upgrade (retires `FANExtractor`/`S3FDExtractor`)
 - Replace `facelib/FANExtractor.py` + `facelib/S3FDExtractor.py` (TF) with InsightFace (preferred)
