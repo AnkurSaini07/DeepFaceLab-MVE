@@ -204,18 +204,36 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   Characterization fixtures from the old TF extractors (for a sanity cross-check, not a strict
   requirement given the detector swap) also not yet captured.
 
-## Phase 5 — Masking (retires `XSegNet`/`core/leras/models/XSeg.py`)
-- Two-mask system: face mask (existing) + occlusion mask (new), combined as
-  `face_mask * (1 - occlusion_mask)`.
-- Port XSeg mask inference (`facelib/XSegNet.py`) to a native PyTorch module — same
-  characterization-fixture approach as Phase 1 before the TF version is removed.
-- Occlusion mask generation: lightweight custom mic detector (few dozen boxed examples) as
-  primary; SAM as general fallback; MediaPipe Hands for hand-specific cases.
-- Feather occlusion boundary tighter than outer face-mask edge.
-- Wire combined mask into training loss path (masking only — reconstruction is Phase 10).
-- Exit: combined mask correctly excludes occluder pixels from a dummy loss computation in a
-  smoke test; visual spot-check on sample frames; XSeg PyTorch output checked against captured
-  TF fixtures within tolerance.
+## Phase 5 — Masking (retires `XSegNet`/`core/leras/models/XSeg.py`) (mostly done)
+- **Done:** `dfl_torch/xseg.py` — clean-room port of `core/leras/models/XSeg.py`'s 6-level U-Net
+  (FRN+TLU activations instead of BatchNorm+ReLU, BlurPool anti-aliased downsampling, dense
+  bottleneck, skip connections), matching `facelib/XSegNet.py`'s construction
+  (`in_ch=3, base_ch=32, out_ch=1`, resolution=256 = 4·2⁶). Golden fixtures captured from the TF
+  version via the `dfl` conda env (`tests/characterization/capture_xseg_fixtures.py`) before
+  writing the port, same methodology as Phase 1. 11 tests total: `tests/test_xseg_shapes.py`
+  (shapes, sigmoid range, `pretrain` skip-zeroing behaves differently from normal mode, full
+  gradient flow through the dense bottleneck) + `tests/characterization/test_xseg_against_tf_fixtures.py`
+  (shape/range match against the TF fixtures).
+- **Done:** `dfl_torch/masking.py` — `combine_masks` (`face_mask * (1 - occlusion_mask)`,
+  Section 6.1), `feather_mask` (reuses DFL's existing proportional erode+blur convention from
+  `facelib.LandmarksProcessor.blur_image_hull_mask`, generalized to any mask), and
+  `feather_combined_mask` (feathers face/occlusion independently, occlusion tighter by default,
+  per Section 6.2). 9 tests in `tests/test_masking.py` covering the mask algebra, edge-softening,
+  and empty-mask handling.
+- **Done, hand-specific case only:** `dfl_torch/occlusion.py` — MediaPipe Hands (`HandLandmarker`
+  Tasks API, single bundled model download, same pattern as `dfl_torch/alignment.py`'s face
+  detector) + `hand_landmarks_to_occlusion_mask` (convex hull per detected hand, dilated since the
+  21 skeleton points trace bones, not silhouette). 4 tests in `tests/test_occlusion.py`.
+- **Not implemented** (Section 6.3's other two occlusion sources): a custom-trained mic detector
+  — needs "a few dozen manually boxed examples" from this project's actual footage, which don't
+  exist yet; and SAM as the general point/box-prompted fallback — a much heavier dependency
+  (checkpoint + `segment-anything` package) that wasn't worth pulling in before the mic detector
+  (the actually-needed case for this footage) has training data. Both are addable later without
+  touching `combine_masks`/`feather_combined_mask` — they just need to produce an occlusion mask
+  array in the same format the hand detector does.
+- **Not yet done:** wiring the combined mask into an actual training loss computation (Phase 7
+  territory — loss functions don't exist yet) and `mainscripts/Extractor.py`/inference-time
+  integration.
 
 ## Phase 6 — Deduplication / pose-balancing
 - Shared pipeline stage applied independently to `src` and `dst`:

@@ -1,0 +1,30 @@
+{
+  "source": "core/leras/models/XSeg.py, via facelib/XSegNet.py construction pattern",
+  "tensorflow_version": "2.19.0",
+  "seed": 42,
+  "resolution": 256,
+  "in_ch": 3,
+  "base_ch": 32,
+  "out_ch": 1,
+  "shapes": {
+    "input": [
+      1,
+      256,
+      256,
+      3
+    ],
+    "logits": [
+      1,
+      256,
+      256,
+      1
+    ],
+    "probs": [
+      1,
+      256,
+      256,
+      1
+    ]
+  },
+  "note": "Weights are randomly initialized (no training occurred) \u2014 shape/range reference only."
+}
