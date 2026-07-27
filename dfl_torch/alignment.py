@@ -119,3 +119,90 @@ def compute_landmark_jitter(landmarks_prev, landmarks_curr):
 
 def passes_jitter_threshold(landmarks_prev, landmarks_curr, max_jitter_px):
     return compute_landmark_jitter(landmarks_prev, landmarks_curr) <= max_jitter_px
+
+
+# --- Temporal smoothing (Section 5.1: "apply a smoothing pass ... to reduce single-frame jitter") ---
+
+def smooth_landmarks_moving_average(landmarks_sequence, window_size=5):
+    """
+    landmarks_sequence: (T, N, 2) array, one landmark set per video frame, in order.
+    Centered moving average along the time axis; the window shrinks near the sequence edges
+    (rather than padding) so it never averages in out-of-sequence data.
+    """
+    landmarks_sequence = np.asarray(landmarks_sequence, dtype=np.float64)
+    t_len = landmarks_sequence.shape[0]
+    half = window_size // 2
+    smoothed = np.empty_like(landmarks_sequence)
+    for t in range(t_len):
+        lo = max(0, t - half)
+        hi = min(t_len, t + half + 1)
+        smoothed[t] = landmarks_sequence[lo:hi].mean(axis=0)
+    return smoothed
+
+
+def smooth_landmarks_kalman(landmarks_sequence, process_var=0.5, measurement_var=4.0):
+    """
+    Per-coordinate scalar Kalman filter (constant-position model) applied independently to every
+    landmark x/y across time. Simpler than a constant-velocity model but sufficient for reducing
+    single-frame jitter, and it's the other option Section 5.1 explicitly names ("moving average
+    or Kalman filter"). Defaults assume ~2px measurement noise std (measurement_var=4.0) and
+    moderate frame-to-frame motion (process_var=0.5) — real face video moves slowly relative to
+    frame rate, so the filter should track genuine motion quickly rather than over-smooth it into
+    lag; tune both to the actual detector's noise characteristics and footage motion speed.
+    """
+    landmarks_sequence = np.asarray(landmarks_sequence, dtype=np.float64)
+    t_len = landmarks_sequence.shape[0]
+    smoothed = np.empty_like(landmarks_sequence)
+
+    x = landmarks_sequence[0].copy()
+    p = np.ones_like(x)
+    smoothed[0] = x
+    for t in range(1, t_len):
+        z = landmarks_sequence[t]
+        p = p + process_var
+        k = p / (p + measurement_var)
+        x = x + k * (z - x)
+        p = (1 - k) * p
+        smoothed[t] = x
+    return smoothed
+
+
+# --- Two-pass alignment (Section 5.1: median reference pose/size, constrained re-alignment) ---
+
+def compute_landmark_span(landmarks):
+    """Bounding-box diagonal of a landmark set — a simple proxy for in-frame face size."""
+    mins = landmarks.min(axis=0)
+    maxs = landmarks.max(axis=0)
+    return float(np.linalg.norm(maxs - mins))
+
+
+def compute_reference_pose_and_size(poses, sizes):
+    """
+    poses: (T, 3) yaw/pitch/roll per frame. sizes: (T,) face size per frame (e.g.
+    compute_landmark_span output). Returns (median_pose (3,), median_size) — the clip-level
+    reference that individual frames are then checked/constrained against.
+    """
+    poses = np.asarray(poses, dtype=np.float64)
+    sizes = np.asarray(sizes, dtype=np.float64)
+    return np.median(poses, axis=0), float(np.median(sizes))
+
+
+def passes_reference_deviation(pose, size, ref_pose, ref_size, max_pose_dev_deg=20.0, max_size_dev_ratio=0.3):
+    """Whether a single frame's pose/size is close enough to the clip's reference to keep as-is."""
+    pose_dev = float(np.linalg.norm(np.asarray(pose, dtype=np.float64) - ref_pose))
+    size_dev_ratio = abs(size - ref_size) / ref_size if ref_size > 0 else float("inf")
+    return pose_dev <= max_pose_dev_deg and size_dev_ratio <= max_size_dev_ratio
+
+
+def clamp_size_to_reference(size, ref_size, max_dev_ratio=0.3):
+    """
+    Clamps a frame's crop size to within max_dev_ratio of the clip's reference size, instead of
+    discarding the frame outright — this is the "re-run alignment constrained to reasonable
+    deviation" half of Section 5.1's two-pass approach (the filtering half is
+    passes_reference_deviation above). Wiring this into the actual crop-transform computation
+    (facelib.LandmarksProcessor.get_transform_mat) is mainscripts/Extractor.py integration work,
+    not yet done — see IMPLEMENTATION_PLAN.md Phase 4.
+    """
+    lo = ref_size * (1.0 - max_dev_ratio)
+    hi = ref_size * (1.0 + max_dev_ratio)
+    return float(np.clip(size, lo, hi))

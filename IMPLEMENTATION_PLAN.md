@@ -187,11 +187,22 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   face photo available as a checked-in test fixture (same category of gap as Section 11.6's
   "explicitly not validated without [X]," here X = a real face). Validate qualitatively once real
   footage is available.
-- **Not yet done** (left for a follow-up pass): reusing/extending blur-sort, temporal smoothing
-  (moving average / Kalman) over landmark sequences for video, two-pass alignment (median
-  reference pose/size per clip), and wiring this into `mainscripts/Extractor.py` in place of
-  FAN/S3FD. Characterization fixtures from the old TF extractors (for a sanity cross-check, not a
-  strict requirement given the detector swap) also not yet captured.
+- **Also done:** temporal smoothing — `smooth_landmarks_moving_average` (centered, shrinking at
+  sequence edges) and `smooth_landmarks_kalman` (per-coordinate scalar constant-position filter;
+  defaults `process_var=0.5, measurement_var=4.0`, tuned for ~2px detector noise and realistic
+  slow head-sway motion — an earlier attempt with much smaller defaults (`1e-3`/`1e-1`) badly
+  lagged behind real motion and made things *worse* than unsmoothed input, caught by a test
+  comparing smoothed-vs-ground-truth MSE against raw-vs-ground-truth MSE on a synthetic noisy
+  trajectory). Two-pass alignment primitives — `compute_landmark_span`,
+  `compute_reference_pose_and_size` (per-clip median pose/size), `passes_reference_deviation`
+  (outlier-frame filter), `clamp_size_to_reference` (constrains a frame's crop size toward the
+  clip reference instead of discarding it — the "constrained re-run" half of Section 5.1's
+  two-pass description). 11 more tests added (24 total in `tests/test_alignment.py`).
+- **Not yet done** (left for a follow-up pass): reusing/extending blur-sort, and wiring any of
+  this into `mainscripts/Extractor.py` in place of FAN/S3FD — that integration also needs to call
+  `facelib.LandmarksProcessor.get_transform_mat` with the clamped size, which hasn't been done.
+  Characterization fixtures from the old TF extractors (for a sanity cross-check, not a strict
+  requirement given the detector swap) also not yet captured.
 
 ## Phase 5 — Masking (retires `XSegNet`/`core/leras/models/XSeg.py`)
 - Two-mask system: face mask (existing) + occlusion mask (new), combined as
