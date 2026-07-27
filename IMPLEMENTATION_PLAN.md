@@ -160,21 +160,38 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
 - Exit: 3/3 tests pass on CPU. Actual CUDA/Tensor-Core behavior on the target 4070 Ti SUPER still
   needs real-GPU validation once available — that part genuinely can't be checked here.
 
-## Phase 4 — Alignment upgrade (retires `FANExtractor`/`S3FDExtractor`)
+## Phase 4 — Alignment upgrade (retires `FANExtractor`/`S3FDExtractor`) (in progress)
 - Replace `facelib/FANExtractor.py` + `facelib/S3FDExtractor.py` (TF) with InsightFace (preferred)
   or MediaPipe Face Mesh — full replacement, not a fallback pair, per the Phase 0.5 audit.
-- Before removal: capture characterization fixtures (detected landmarks/boxes on a handful of
-  fixture images) from the current TF extractors, same methodology as Phase 1, to sanity-check
-  the new detector isn't wildly divergent on the same inputs (exact landmark match isn't expected
-  across different models, but gross detection failures should show up).
-- Automated quality filtering: confidence threshold, frame-to-frame jitter flagging, yaw/pitch/roll
-  range filtering, reuse/extend blur-sort.
-- Temporal smoothing pass (moving average / Kalman) over landmark sequences for video.
-- Two-pass alignment: median reference pose/size per clip, re-align constrained to that reference.
-- Update `mainscripts/Extractor.py` to call the new detector instead of FAN/S3FD.
-- Exit: run against a sample clip, confirm filtering/smoothing reduces jitter qualitatively;
-  covered by data-pipeline unit tests where deterministic (e.g., filtering thresholds on fixture
-  landmark sequences).
+- **Detector choice: MediaPipe, not InsightFace** (deviates from requirements.md's stated
+  preference — documented in `dfl_torch/alignment.py`'s module docstring). Reasons: (1) MediaPipe
+  is explicitly called out in Section 5.1 as robust to partial occlusion, which is this project's
+  actual problem (mic-occluded mouth); (2) its model is one self-contained ~3.7MB download
+  (`face_landmarker.task`, cached to `~/.cache/dfl_torch/`), vs. InsightFace's ONNX model-zoo
+  dependency — friendlier to this CPU-only/no-persistent-GPU dev loop. Revisit if MediaPipe's
+  accuracy proves insufficient on real footage; nothing downstream depends on which detector
+  produced the landmarks/pose, so swapping later is contained.
+  - Note: the older `mediapipe.solutions.face_mesh` API isn't available in the installed build
+    (0.10.35, only `mediapipe.tasks` is exposed) — used the newer Tasks API
+    (`vision.FaceLandmarker`) instead.
+- **Done:** `dfl_torch/alignment.py` — `FaceLandmarkDetector` (478-point landmarks + 4x4 facial
+  transformation matrix per detected face), `estimate_pose_from_matrix` (yaw/pitch/roll via
+  standard rotation-matrix Euler decomposition — pure math, unit-tested against known rotation
+  matrices independent of real face detection), and the quality-filtering predicates:
+  `passes_confidence_threshold`, `passes_pose_range`, `compute_landmark_jitter` /
+  `passes_jitter_threshold` (Section 5.1's confidence/pose-range/frame-jitter checks).
+  `tests/test_alignment.py`: 13 tests — pose-decomposition math is exhaustively tested (6
+  parametrized known-angle cases), filtering predicates fully tested, detector wrapper smoke-tested
+  (initializes, downloads+caches its model, correctly reports no-face on non-face input).
+  **Known test-coverage limitation:** real detection *accuracy* isn't validated — there's no real
+  face photo available as a checked-in test fixture (same category of gap as Section 11.6's
+  "explicitly not validated without [X]," here X = a real face). Validate qualitatively once real
+  footage is available.
+- **Not yet done** (left for a follow-up pass): reusing/extending blur-sort, temporal smoothing
+  (moving average / Kalman) over landmark sequences for video, two-pass alignment (median
+  reference pose/size per clip), and wiring this into `mainscripts/Extractor.py` in place of
+  FAN/S3FD. Characterization fixtures from the old TF extractors (for a sanity cross-check, not a
+  strict requirement given the detector swap) also not yet captured.
 
 ## Phase 5 — Masking (retires `XSegNet`/`core/leras/models/XSeg.py`)
 - Two-mask system: face mask (existing) + occlusion mask (new), combined as

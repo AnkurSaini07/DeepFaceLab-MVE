@@ -16,3 +16,4 @@ colorama==0.4.6
 jsonschema==4.26.0
 PyYAML==6.0.3
 pytest==9.1.1
+mediapipe==0.10.35
