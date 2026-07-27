@@ -1,4 +1,6 @@
 __pycache__/
+.pytest_cache/
+.venv*/
 !*.md
 !*.txt
 !*.jpg
@@ -8,3 +10,6 @@ __pycache__/
 *.bat
 *.zip
 test*
+!tests/
+!tests/**
+tests/**/__pycache__/

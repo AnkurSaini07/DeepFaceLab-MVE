@@ -1,0 +1,56 @@
+{
+  "source": "core/leras/archis/DeepFakeArchi.py DF variant, via models/Model_SAEHD/Model.py construction pattern",
+  "tensorflow_version": "2.19.0",
+  "seed": 42,
+  "resolution": 128,
+  "e_dims": 64,
+  "ae_dims": 256,
+  "d_dims": 64,
+  "d_mask_dims": 22,
+  "gan_patch_size": 16,
+  "gan_dims": 16,
+  "input_ch": 3,
+  "shapes": {
+    "input": [
+      1,
+      128,
+      128,
+      3
+    ],
+    "encoder_out": [
+      1,
+      32768
+    ],
+    "inter_out": [
+      1,
+      16,
+      16,
+      256
+    ],
+    "decoder_rgb": [
+      1,
+      128,
+      128,
+      3
+    ],
+    "decoder_mask": [
+      1,
+      128,
+      128,
+      1
+    ],
+    "discriminator_center_out": [
+      1,
+      16,
+      16,
+      1
+    ],
+    "discriminator_out": [
+      1,
+      128,
+      128,
+      1
+    ]
+  },
+  "note": "Discriminator weights are randomly initialized (no training occurred), so discriminator_out is only useful for shape/range characterization, not a semantic correctness reference."
+}
