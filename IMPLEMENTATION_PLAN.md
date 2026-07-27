@@ -259,13 +259,38 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
 - Exit (pending real data): run on `dst` first (Section 5.4 priority), then `src`; report cluster
   count / frames retained before/after as a sanity check.
 
-## Phase 7 — Loss functions
-- Add to SSIM+L1 baseline: LPIPS (VGG feature space), PatchGAN adversarial (using the Phase 1
-  discriminator module), ArcFace identity similarity.
-- All loss terms respect the combined mask from Phase 5 — occluded pixels excluded everywhere,
-  not just primary reconstruction loss.
-- Exit: smoke test extended to confirm each loss term is finite and mask-respecting (zero
-  gradient contribution from masked-out pixels, verified on a synthetic fully-occluded region).
+## Phase 7 — Loss functions (mostly done)
+- **Correction to "SSIM + L1"** (both requirements.md Section 9 and DFL's own docs use this
+  shorthand): `models/Model_SAEHD/Model.py`'s actual reconstruction loss is MS-SSIM + *squared*
+  error (`tf.square`), not L1/absolute error. `dfl_torch/losses.py`'s `masked_reconstruction_loss`
+  matches what the code actually does, documented explicitly (same spirit as the earlier
+  PNG-vs-JPG metadata-format correction in Phase 2).
+- **Masking convention matches DFL's actual code, not a new design:** DFL pre-multiplies
+  target/pred by the mask *before* computing loss or feeding the discriminator
+  (`gpu_target_src_masked_opt = gpu_target_src*gpu_target_srcm_blur`, then
+  `DLoss(..., self.D_src(gpu_pred_src_src_masked_opt))`), then averages over *all* pixels, not
+  just masked-in ones — which is what makes a heavily-occluded frame contribute proportionally
+  less automatically (Section 7's severity-based downweighting falls out of this for free,
+  no separate weighting step needed). `dfl_torch/losses.py` follows the same convention:
+  functions take already-masked pred/target, mirroring DFL rather than doing windowed-map-level
+  masking inside SSIM.
+- **Done:** `dfl_torch/losses.py` — `ssim` (single-scale, Gaussian-windowed, clean-room; DFL's
+  is multi-scale via `tf.image.ssim_multiscale`, simplified here), `masked_reconstruction_loss`
+  (MS-SSIM + squared error per above), `LPIPSLoss` (wraps the `lpips` package, AlexNet backbone —
+  lightest available, though its ImageNet weights are still a ~230MB cached download),
+  `discriminator_gan_loss` / `generator_adversarial_loss` (BCE-with-logits, matching DFL's actual
+  `DLoss` — **not hinge loss**, confirmed by reading `Model_SAEHD/Model.py`'s `DLoss` definition
+  rather than assuming a convention) using the Phase 1 discriminator.
+- **Not implemented:** identity-preservation loss (ArcFace embedding similarity) — same
+  heavier-dependency deferral as Phase 5's mic detector and Phase 6's ArcFace dedup signal.
+- Exit: 14 tests in `tests/test_losses.py`. Covers the plan's key exit criterion directly —
+  `test_masked_reconstruction_loss_zero_gradient_on_fully_masked_out_region` constructs a
+  synthetic fully-occluded half-image and asserts zero gradient in that region and nonzero
+  gradient in the visible region (plus a same-loss-value test confirming the masked region's
+  *prediction content* doesn't affect the loss at all, not just its gradient). GAN losses and
+  LPIPS tested for finiteness, directional correctness (discriminator loss lower when
+  confidently correct; generator loss lower when fooling the discriminator), gradient flow, and
+  (LPIPS) mask-respecting behavior.
 
 ## Phase 8 — Training loop
 - LR schedule: warmup + cosine decay (or one-cycle).
