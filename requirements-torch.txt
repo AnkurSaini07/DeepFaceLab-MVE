@@ -1,0 +1,18 @@
+# PyTorch migration dev environment (dfl_torch/, tests/) — CPU-only, per requirements.md's
+# development constraint. Separate from environment.yml / requirements-cuda.txt, which pin the
+# legacy TF1-era stack (Python 3.7, tensorflow) still used to run core/leras until it's fully
+# replaced (see IMPLEMENTATION_PLAN.md Phase 0.5). Install torch/torchvision from
+# https://download.pytorch.org/whl/cpu for CPU-only, or the cu12x index for actual GPU training.
+torch==2.13.0
+numpy==2.4.4
+opencv-python==5.0.0.93
+scipy==1.18.0
+pillow==12.3.0
+numexpr==2.14.2
+scikit-image==0.26.0
+h5py==3.16.0
+tqdm==4.70.0
+colorama==0.4.6
+jsonschema==4.26.0
+PyYAML==6.0.3
+pytest==9.1.1

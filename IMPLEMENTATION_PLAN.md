@@ -105,18 +105,39 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
 - Exit: shape tests + characterization tests pass on CPU; discrepancies from the golden fixtures
   are understood and documented (expected numerical drift vs. an actual bug), not silently ignored.
 
-## Phase 2 — Data pipeline
-- Wrap existing PNG-metadata read/write (landmarks, mask polygons, source info) unchanged —
-  reuse DFLIMG/`samplelib` parsing rather than reimplementing the format (this layer is pure
-  NumPy/PNG, not TF-dependent, so it's reused as-is rather than rewritten).
-- `torch.utils.data.Dataset` + `DataLoader` (`num_workers`, `pin_memory=True`,
-  `persistent_workers=True`, `prefetch_factor=4`).
-- Given the small (~1-5k frame) faceset size, add a full in-RAM decode/cache path — load once,
-  hold decoded tensors for the run rather than re-decoding PNGs every epoch.
-- Tests (Section 11.4): PNG metadata round-trip, landmark parsing, mask extraction against
-  checked-in fixture images.
-- Exit: loader produces correctly-shaped batches from a small fixture faceset on CPU; in-RAM cache
-  path verified against the non-cached path for identical output.
+## Phase 2 — Data pipeline (done)
+- Wrap existing metadata read/write (landmarks, mask polygons, source info) unchanged — reuse
+  `DFLIMG`/`samplelib.SampleLoader` parsing rather than reimplementing the format (this layer is
+  pure NumPy/OpenCV, not TF-dependent, so it's reused as-is rather than rewritten). **Correction
+  to requirements.md's "PNG-embedded metadata" description:** this MVE fork's `DFLIMG.load()`
+  (`DFLIMG/DFLIMG.py`) only recognizes `.jpg` — the actual on-disk aligned-faceset format is JPG
+  with embedded metadata, not PNG. Doesn't change anything downstream; noted for accuracy.
+- `dfl_torch/data.py`: `SAEHDFaceDataset` (wraps `SampleLoader.load(SampleType.FACE, ...)`,
+  resizes to target resolution, returns CHW float32 `[0, 1]` image + mask tensors — XSeg mask if
+  present, else `LandmarksProcessor.get_image_hull_mask`) + `build_dataloader()`
+  (`pin_memory=True`, `persistent_workers`, `prefetch_factor=4` per Section 4).
+- Given the small (~1-5k frame) faceset size (resolved decision #3), `cache_in_ram=True` (default)
+  eagerly decodes every sample once at construction and holds tensors in memory — recommend
+  `num_workers=0` with this, since the point of caching is avoiding repeat decode cost, and
+  worker processes would otherwise pickle the cache across process boundaries for no benefit.
+- **Found and fixed a real bug while wiring this up**, not just a version-pin issue:
+  `facelib/LandmarksProcessor.py` used the `np.int`/removed-in-NumPy≥1.24 alias in 4 places
+  (`expand_eyebrows`, `get_image_eye_mask`, `get_image_mouth_mask`, `draw_landmarks`) — this file
+  is one of the "reuse as-is, framework-agnostic" components, and it silently doesn't work under
+  any current NumPy. Fixed (`np.int` → `int`, behavior-identical). The same deprecated-alias
+  pattern (`np.int`/`np.float`) also exists in `facelib/{S3FDExtractor,FANExtractor}.py`,
+  `core/imagelib/text.py`, `core/qtex/qtex.py`, `mainscripts/{Extractor,XSegUtil}.py`,
+  `XSegEditor/XSegEditor.py` — not fixed yet since those files are either being replaced outright
+  (Phase 4's extractors) or aren't on the critical path for Phase 2; tracked here so Phase 0.5's
+  "remove all outdated dependencies" sweep doesn't miss them.
+- Tests (Section 11.4, `tests/test_data_pipeline.py`): sample count, item shapes/dtype, value
+  range (including a real bug caught here — `cv2.resize(..., INTER_CUBIC)` overshoots `[0, 1]`
+  near hard edges and wasn't being clamped on the image, only the mask; fixed), mask
+  non-degeneracy, cached-vs-uncached equivalence, batch shapes, empty-directory error handling.
+  Fixture faceset: `tests/fixtures/faceset/` (3 synthetic images with procedurally generated
+  68-point landmarks embedded via `DFLJPG`, checked in; regenerate via
+  `tests/fixtures/generate_face_fixture.py`).
+- Exit: 7/7 tests pass on CPU (`.venv-torch`); in-RAM cache path verified identical to non-cached.
 
 ## Phase 3 — Precision (BF16 autocast)
 - Wrap forward+loss in `torch.autocast(device_type='cuda', dtype=torch.bfloat16)`; no
