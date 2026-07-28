@@ -11,10 +11,12 @@ in this CPU-only/no-persistent-GPU dev setup. Swapping in InsightFace later is a
 if MediaPipe's accuracy proves insufficient on real footage — nothing downstream depends on which
 detector produced the landmarks/pose.
 
-Scope note: this covers the detector wrapper, pose estimation, and per-frame quality-filtering
-predicates (Section 5.1's confidence threshold, pose-range filtering, jitter detection). Temporal
-smoothing (moving average / Kalman) and two-pass alignment are not yet implemented — see
-IMPLEMENTATION_PLAN.md Phase 4 for what's left.
+Scope: detector wrapper, pose estimation, per-frame quality-filtering predicates (Section 5.1's
+confidence threshold, pose-range filtering, jitter detection), temporal smoothing (moving average
+/ Kalman), two-pass alignment primitives, and a MediaPipe->dlib-68 landmark conversion (below) so
+this detector's output can drive `facelib.LandmarksProcessor.get_transform_mat` — the actual
+alignment-crop wiring lives in `dfl_torch/extract.py`. See IMPLEMENTATION_PLAN.md Phase 4 for
+what's still open (temporal smoothing/two-pass aren't wired into `extract.py` yet).
 """
 import math
 from pathlib import Path
@@ -206,3 +208,63 @@ def clamp_size_to_reference(size, ref_size, max_dev_ratio=0.3):
     lo = ref_size * (1.0 - max_dev_ratio)
     hi = ref_size * (1.0 + max_dev_ratio)
     return float(np.clip(size, lo, hi))
+
+
+# --- MediaPipe -> dlib-68 conversion ---
+#
+# facelib.LandmarksProcessor.get_transform_mat (DFL's alignment-crop transform, reused unchanged
+# by dfl_torch/extract.py) fits a similarity transform against a specific 33-point subset of
+# dlib's 68-point landmark scheme. MediaPipe's FaceLandmarker returns 478 points in an entirely
+# different topology (no shared index numbering), so using it to drive DFL's alignment code
+# needs a correspondence table between the two.
+#
+# Getting that table wrong would silently misalign every extracted frame -- a high-blast-radius,
+# hard-to-detect failure mode with no real face photo available in this dev environment to
+# visually verify a hand-derived mapping against. Rather than guess from memory, this table is
+# vendored from a maintained, purpose-built, MIT-licensed conversion:
+#   https://github.com/PeizhiYan/Mediapipe_2_Dlib_Landmarks (mp2dlib.py, commit as of 2024-09-18)
+#   Copyright (c) 2024 Peizhi Yan (Matthew), MIT License.
+# Each dlib index maps to one or two MediaPipe indices; where there are two, their coordinates
+# are averaged to approximate the dlib landmark position. This is an *approximation* (MediaPipe's
+# underlying model and topology differ from dlib's), not a bit-exact equivalent of what a real
+# dlib detector would produce on the same face -- but it lands in the same coordinate convention
+# and index scheme that every downstream consumer (get_transform_mat, get_image_hull_mask,
+# samplelib) expects, which is what actually matters for pipeline compatibility.
+_MEDIAPIPE_TO_DLIB68_INDICES = [
+    # Face contour (1-17)
+    [127], [234], [93], [132, 58], [58, 172], [136], [150], [176], [152],
+    [400], [379], [365], [397, 288], [361], [323], [454], [356],
+    # Right brow (18-22)
+    [70], [63], [105], [66], [107],
+    # Left brow (23-27)
+    [336], [296], [334], [293], [300],
+    # Nose (28-36)
+    [168, 6], [197, 195], [5], [4], [75], [97], [2], [326], [305],
+    # Right eye (37-42)
+    [33], [160], [158], [133], [153], [144],
+    # Left eye (43-48)
+    [362], [385], [387], [263], [373], [380],
+    # Upper lip contour top (49-55)
+    [61], [39], [37], [0], [267], [269], [291],
+    # Lower lip contour bottom (56-60)
+    [321], [314], [17], [84], [91],
+    # Upper lip contour bottom (61-65)
+    [78], [82], [13], [312], [308],
+    # Lower lip contour top (66-68)
+    [317], [14], [87],
+]
+assert len(_MEDIAPIPE_TO_DLIB68_INDICES) == 68
+
+
+def convert_mediapipe_landmarks_to_dlib68(landmarks):
+    """
+    landmarks: (478, 2) or (468, 2) array (or list), MediaPipe FaceLandmarker output in pixel
+    coordinates (as returned by FaceLandmarkDetector.detect). Returns a (68, 2) float32 array in
+    dlib's 68-point index convention, suitable for facelib.LandmarksProcessor.get_transform_mat
+    and everything downstream that expects it (see module note above).
+    """
+    landmarks = np.asarray(landmarks, dtype=np.float64)
+    dlib68 = np.empty((68, landmarks.shape[1]), dtype=np.float64)
+    for i, idxs in enumerate(_MEDIAPIPE_TO_DLIB68_INDICES):
+        dlib68[i] = landmarks[idxs].mean(axis=0)
+    return dlib68.astype(np.float32)

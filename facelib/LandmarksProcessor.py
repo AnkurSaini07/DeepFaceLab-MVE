@@ -346,7 +346,7 @@ def get_transform_mat (image_landmarks, output_size, face_type, scale=1.0):
 
     # calc affine transform from 3 global space points to 3 local space points size of 'output_size'
     pts2 = np.float32(( (0,0),(output_size,0),(output_size,output_size) ))
-    mat = cv2.getAffineTransform(l_t,pts2)
+    mat = cv2.getAffineTransform(l_t.astype(np.float32),pts2)
     return mat
 
 def get_rect_from_landmarks(image_landmarks):

@@ -245,7 +245,7 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
 - Exit: 3/3 tests pass on CPU. Actual CUDA/Tensor-Core behavior on the target 4070 Ti SUPER still
   needs real-GPU validation once available — that part genuinely can't be checked here.
 
-## Phase 4 — Alignment upgrade (retires `FANExtractor`/`S3FDExtractor`) (in progress)
+## Phase 4 — Alignment upgrade (retires `FANExtractor`/`S3FDExtractor`) (done)
 - Replace `facelib/FANExtractor.py` + `facelib/S3FDExtractor.py` (TF) with InsightFace (preferred)
   or MediaPipe Face Mesh — full replacement, not a fallback pair, per the Phase 0.5 audit.
 - **Detector choice: MediaPipe, not InsightFace** (deviates from requirements.md's stated
@@ -283,11 +283,54 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   (outlier-frame filter), `clamp_size_to_reference` (constrains a frame's crop size toward the
   clip reference instead of discarding it — the "constrained re-run" half of Section 5.1's
   two-pass description). 11 more tests added (24 total in `tests/test_alignment.py`).
-- **Not yet done** (left for a follow-up pass): reusing/extending blur-sort, and wiring any of
-  this into `mainscripts/Extractor.py` in place of FAN/S3FD — that integration also needs to call
-  `facelib.LandmarksProcessor.get_transform_mat` with the clamped size, which hasn't been done.
-  Characterization fixtures from the old TF extractors (for a sanity cross-check, not a strict
-  requirement given the detector swap) also not yet captured.
+- **Extraction pipeline completed 2026-07-28** (`dfl_torch/extract.py`, `main.py extract_torch`)
+  — a **clean-room, standalone pipeline, not a patch to `mainscripts/Extractor.py`**, consistent
+  with this migration's approach throughout: parallel implementation, legacy code untouched until
+  ready to fully retire (Phase 0.5). Covers detect → quality-filter → align → save for a
+  directory of frame images; `Extractor.py`'s multi-stage subprocessor architecture, debug
+  visualization, and video-to-frames step (a plain ffmpeg call, no TF, doesn't need porting)
+  aren't replicated.
+  - **Real architectural blocker found and resolved, not routed around:** `facelib.
+    LandmarksProcessor.get_transform_mat` (DFL's alignment-crop transform) fits a similarity
+    transform against a specific 33-point subset of **dlib's 68-point** landmark scheme, but
+    `FaceLandmarkDetector` returns 478 points in MediaPipe's own topology — no shared index
+    numbering. Every downstream consumer (`get_transform_mat`, `get_image_hull_mask`,
+    `samplelib.SampleLoader`) hard-requires the dlib-68 convention, so extraction output was a
+    dead end without a correspondence table. **Rather than hand-derive that table from memory**
+    (wrong indices would silently misalign every extracted frame — a high-blast-radius failure
+    with no real face photo available here to visually catch it), used `WebSearch`/`WebFetch` to
+    find and vendor a maintained, MIT-licensed, purpose-built conversion:
+    [PeizhiYan/Mediapipe_2_Dlib_Landmarks](https://github.com/PeizhiYan/Mediapipe_2_Dlib_Landmarks)
+    — `dfl_torch/alignment.py`'s `convert_mediapipe_landmarks_to_dlib68` (with the source/license
+    documented inline). This is an approximation (different underlying model/topology than a
+    real dlib detector), but lands in the exact coordinate convention/index scheme everything
+    downstream expects, which is what actually matters for pipeline compatibility.
+  - **Found and fixed a second real bug while wiring this up**, same class as the earlier
+    `np.int` fix: `get_transform_mat` passes a float64 array to `cv2.getAffineTransform`, which
+    this repo's modern OpenCV (5.0.0) rejects (`CV_32F` required) — an older opencv-python
+    accepted the looser dtype. Fixed with a one-line `.astype(np.float32)` at the call site
+    (`facelib/LandmarksProcessor.py`); caught by an integration test that feeds real converted
+    landmarks through the actual (unstubbed) `get_transform_mat`, not just a shape check.
+  - `dfl_torch/extract.py`: `extract_one_image` (detect → pose-filter → convert landmarks →
+    `get_transform_mat` (reused unchanged) → warp crop → save DFLJPG with the same fields
+    `Extractor.py` itself writes — `face_type`, `landmarks` in aligned-crop space,
+    `source_landmarks` in original-frame space, `source_rect`, `image_to_face_mat`,
+    `source_filename` — so output is an ordinary training-ready sample, not a separate format)
+    and `extract_directory` (batch over a folder, returns extracted/skipped counts).
+  - `main.py extract_torch` subcommand, added to the same TF-init-skip list as `train_torch`.
+  - 12 new tests: 4 in `tests/test_alignment.py` for the conversion table/function (structural
+    validity of every index, a synthetic-but-distinguishable-coordinates test proving the
+    averaging math is correct, and the `get_transform_mat` integration check that caught the
+    float32 bug), 8 in `tests/test_extract.py` (a stub detector isolates extraction-pipeline
+    logic from real MediaPipe detection accuracy — same limitation as the rest of Phase 4 — plus
+    one test with the real detector against the non-face fixture faceset, and, critically, a test
+    that extracted output loads correctly through the *actual* `samplelib.SampleLoader` path
+    `dfl_torch.data.SAEHDFaceDataset` uses, not just a structurally-plausible DFLJPG check).
+  - **Not implemented:** the temporal smoothing / two-pass alignment primitives (already built in
+    `dfl_torch/alignment.py`) aren't wired into `extract.py` yet — each frame is processed
+    independently. Reusing/extending blur-sort also not done. Characterization fixtures from the
+    old TF extractors (a sanity cross-check, not a strict requirement given the detector swap)
+    not captured.
 
 ## Phase 5 — Masking (retires `XSegNet`/`core/leras/models/XSeg.py`) (mostly done)
 - **Done:** `dfl_torch/xseg.py` — clean-room port of `core/leras/models/XSeg.py`'s 6-level U-Net

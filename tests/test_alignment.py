@@ -14,10 +14,12 @@ import numpy as np
 import pytest
 
 from dfl_torch.alignment import (
+    _MEDIAPIPE_TO_DLIB68_INDICES,
     clamp_size_to_reference,
     compute_landmark_jitter,
     compute_landmark_span,
     compute_reference_pose_and_size,
+    convert_mediapipe_landmarks_to_dlib68,
     estimate_pose_from_matrix,
     passes_confidence_threshold,
     passes_jitter_threshold,
@@ -177,3 +179,51 @@ def test_clamp_size_to_reference_within_range_unchanged():
 def test_clamp_size_to_reference_clamps_outliers():
     assert clamp_size_to_reference(500, ref_size=100, max_dev_ratio=0.3) == pytest.approx(130)
     assert clamp_size_to_reference(1, ref_size=100, max_dev_ratio=0.3) == pytest.approx(70)
+
+
+# --- MediaPipe -> dlib-68 conversion ---
+
+def test_mediapipe_to_dlib68_table_has_68_entries_all_valid_indices():
+    assert len(_MEDIAPIPE_TO_DLIB68_INDICES) == 68
+    for idxs in _MEDIAPIPE_TO_DLIB68_INDICES:
+        assert 1 <= len(idxs) <= 2
+        for idx in idxs:
+            assert 0 <= idx < 478
+
+
+def test_convert_mediapipe_landmarks_to_dlib68_output_shape():
+    landmarks = np.random.RandomState(0).rand(478, 2) * 512
+    dlib68 = convert_mediapipe_landmarks_to_dlib68(landmarks)
+    assert dlib68.shape == (68, 2)
+    assert dlib68.dtype == np.float32
+
+
+def test_convert_mediapipe_landmarks_to_dlib68_averages_two_index_entries_correctly():
+    """dlib landmark #4 (0-indexed 3) maps to MediaPipe indices [132, 58] per the vendored table
+    -- a distinguishable synthetic landmark set (landmarks[i] = (i, i*2)) lets us verify the
+    averaging math directly rather than just checking output shape."""
+    landmarks = np.stack([np.arange(478), np.arange(478) * 2], axis=1).astype(np.float64)
+    dlib68 = convert_mediapipe_landmarks_to_dlib68(landmarks)
+
+    expected = np.mean(landmarks[[132, 58]], axis=0)
+    np.testing.assert_allclose(dlib68[3], expected, atol=1e-4)
+
+    # A single-index entry (dlib #1 -> MediaPipe [127]) should pass through unaveraged.
+    np.testing.assert_allclose(dlib68[0], landmarks[127], atol=1e-4)
+
+
+def test_convert_mediapipe_landmarks_to_dlib68_feeds_get_transform_mat_without_error():
+    """Integration check: the converted output must actually work with DFL's own (reused
+    unchanged) alignment function, not just have the right shape."""
+    from facelib import FaceType, LandmarksProcessor
+
+    # A rough, plausible frontal-face-like point cloud (not a real face, but not degenerate --
+    # spread across a sensible region so get_transform_mat's umeyama fit doesn't blow up).
+    rng = np.random.RandomState(0)
+    center = np.array([256.0, 256.0])
+    landmarks = center + rng.uniform(-150, 150, size=(478, 2))
+    dlib68 = convert_mediapipe_landmarks_to_dlib68(landmarks)
+
+    mat = LandmarksProcessor.get_transform_mat(dlib68, output_size=256, face_type=FaceType.FULL)
+    assert mat.shape == (2, 3)
+    assert np.all(np.isfinite(mat))

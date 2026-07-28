@@ -7,11 +7,12 @@ if __name__ == "__main__":
     multiprocessing.set_start_method("spawn")
 
     import sys
-    # train_torch (dfl_torch/) has no TF/leras dependency at all -- skip initializing the legacy
-    # TF device-detection subprocess for it, since that requires TensorFlow to be importable,
-    # which the separate PyTorch dev/train environment doesn't have (see
-    # IMPLEMENTATION_PLAN.md / memory on the two-environment split).
-    if "train_torch" not in sys.argv:
+    # dfl_torch/ subcommands (train_torch, extract_torch) have no TF/leras dependency at all --
+    # skip initializing the legacy TF device-detection subprocess for them, since that requires
+    # TensorFlow to be importable, which the separate PyTorch dev/train environment doesn't have
+    # (see IMPLEMENTATION_PLAN.md / memory on the two-environment split).
+    _TORCH_ONLY_SUBCOMMANDS = ("train_torch", "extract_torch")
+    if not any(cmd in sys.argv for cmd in _TORCH_ONLY_SUBCOMMANDS):
         from core.leras import nn
         nn.initialize_main_env()
 
@@ -79,6 +80,31 @@ if __name__ == "__main__":
     p.add_argument('--force-gpu-idxs', dest="force_gpu_idxs", default=None, help="Force to choose GPU indexes separated by comma.")
 
     p.set_defaults (func=process_extract)
+
+    def process_extract_torch(arguments):
+        osex.set_process_lowest_prio()
+        from facelib import FaceType as _FaceType
+        from dfl_torch.extract import extract_directory
+        extracted, skipped = extract_directory(
+            arguments.input_dir,
+            arguments.output_dir,
+            resolution=arguments.resolution,
+            face_type=_FaceType.fromString(arguments.face_type),
+            max_yaw=arguments.max_yaw,
+            max_pitch=arguments.max_pitch,
+            max_roll=arguments.max_roll,
+        )
+        print(f"Extracted {extracted}, skipped {skipped} (no face detected / pose out of range).")
+
+    p = subparsers.add_parser("extract_torch", help="Extract faces using the PyTorch (MediaPipe) pipeline — see IMPLEMENTATION_PLAN.md Phase 4.")
+    p.add_argument('--input-dir', required=True, action=fixPathAction, dest="input_dir", help="Input directory of frame images.")
+    p.add_argument('--output-dir', required=True, action=fixPathAction, dest="output_dir", help="Output directory for extracted aligned faces.")
+    p.add_argument('--face-type', dest="face_type", choices=['half_face', 'full_face', 'whole_face', 'head'], default='full_face')
+    p.add_argument('--resolution', type=int, dest="resolution", default=512, help="Output face resolution.")
+    p.add_argument('--max-yaw', type=float, dest="max_yaw", default=75.0, help="Discard frames beyond this absolute yaw (degrees).")
+    p.add_argument('--max-pitch', type=float, dest="max_pitch", default=60.0, help="Discard frames beyond this absolute pitch (degrees).")
+    p.add_argument('--max-roll', type=float, dest="max_roll", default=45.0, help="Discard frames beyond this absolute roll (degrees).")
+    p.set_defaults(func=process_extract_torch)
 
     def process_sort(arguments):
         osex.set_process_lowest_prio()
