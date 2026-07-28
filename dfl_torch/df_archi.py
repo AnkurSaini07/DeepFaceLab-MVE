@@ -10,6 +10,7 @@ clean-room design rather than a literal port.
 import torch
 import torch.nn as nn
 
+from dfl_torch.init import apply_xavier_init
 from dfl_torch.layers import DownscaleBlock, ResidualBlock, Upscale
 
 
@@ -19,6 +20,7 @@ class Encoder(nn.Module):
         self.n_downscales = n_downscales
         self.e_ch = e_ch
         self.down1 = DownscaleBlock(in_ch, e_ch, n_downscales=n_downscales, kernel_size=kernel_size)
+        apply_xavier_init(self)
 
     def forward(self, x):
         x = self.down1(x)
@@ -39,6 +41,7 @@ class Inter(nn.Module):
         self.dense1 = nn.Linear(in_ch, ae_ch)
         self.dense2 = nn.Linear(ae_ch, lowest_dense_res * lowest_dense_res * ae_out_ch)
         self.upscale1 = Upscale(ae_out_ch, ae_out_ch)
+        apply_xavier_init(self)
 
     def forward(self, x):
         x = self.dense1(x)
@@ -68,6 +71,7 @@ class Decoder(nn.Module):
         self.upscalem1 = Upscale(d_mask_ch * 8, d_mask_ch * 4)
         self.upscalem2 = Upscale(d_mask_ch * 4, d_mask_ch * 2)
         self.out_convm = nn.Conv2d(d_mask_ch * 2, 1, kernel_size=1)
+        apply_xavier_init(self)
 
     def forward(self, z):
         x = self.upscale0(z)

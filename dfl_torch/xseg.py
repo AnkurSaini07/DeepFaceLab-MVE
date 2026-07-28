@@ -12,6 +12,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from dfl_torch.init import apply_xavier_init
+
 
 class FRNorm2D(nn.Module):
     """Filter Response Normalization (https://arxiv.org/abs/1911.09737) — per-channel RMS norm,
@@ -154,6 +156,7 @@ class XSegNet(nn.Module):
         self.uconv02 = ConvBlock(base_ch * 2, base_ch)
         self.uconv01 = ConvBlock(base_ch, base_ch)
         self.out_conv = nn.Conv2d(base_ch, out_ch, kernel_size=3, padding=1)
+        apply_xavier_init(self)
 
     def forward(self, x, pretrain=False):
         x = self.conv01(x)

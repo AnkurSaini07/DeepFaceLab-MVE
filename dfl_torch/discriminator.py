@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from dfl_torch.init import apply_xavier_init
+
 
 def calc_receptive_field_size(layers):
     rf = 0
@@ -83,6 +85,7 @@ class UNetPatchDiscriminator(nn.Module):
         self.out_conv = nn.Conv2d(level_chs[-1] * 2, 1, kernel_size=1)
         self.center_out = nn.Conv2d(level_chs[len(layers) - 1], 1, kernel_size=1)
         self.center_conv = nn.Conv2d(level_chs[len(layers) - 1], level_chs[len(layers) - 1], kernel_size=1)
+        apply_xavier_init(self)
 
     def forward(self, x):
         x = F.leaky_relu(self.in_conv(x), 0.2)

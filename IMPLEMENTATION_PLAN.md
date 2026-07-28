@@ -3,6 +3,43 @@
 Derived from `requirements.md`. Phases map to Section 13's build order; each phase lists concrete
 deliverables and its exit criteria (what "done" means before moving on).
 
+## requirements.md update (2026-07-28)
+The user revised `requirements.md`, adding Sections 14a/14b/14c and refining Section 15
+(renumbered from the original Section 14). Summary of what changed and what it triggered:
+
+- **14a. Clean-Room Implementation Guidance** — confirms the clean-room decision already made
+  (resolved decision #4 below), plus 4 specific TF1→PyTorch traps:
+  1. Tensor layout (NHWC→NCHW transpose must happen CPU-side, in the DataLoader worker) —
+     **already compliant**: `dfl_torch/data.py`'s `SAEHDFaceDataset._load_item` does the
+     `.transpose(2, 0, 1)` inside `__getitem__`, which runs in the DataLoader worker process (or
+     main process if `num_workers=0`), never on-GPU.
+  2. Convolution padding asymmetry in TF `SAME` — not applicable, no weight-conversion path
+     exists (Section 11.3 already marked not-applicable under the clean-room strategy).
+  3. Weight initialization — **acted on**: leras' actual default (verified empirically via the
+     `dfl` conda env, not assumed) is `glorot_uniform` for Conv2D/Dense when no initializer is
+     explicitly passed, which is what `DeepFakeArchi.py`/`XSeg.py` do. PyTorch's own defaults
+     (Kaiming-uniform) differ. Added `dfl_torch/init.py`'s `apply_xavier_init`, applied to every
+     `dfl_torch` network (Encoder/Inter/Decoder, discriminator, XSeg) — see updated Phase 1/5
+     entries below.
+  4. `torch.compile` graph-break guidance — noted for Phase 12, not started yet.
+- **14b. Section 8 revision — Latent Temporal Fusion.** Replaces the original two-stage
+  "geometry predictor → conditioning" design for Phase 10 with fusing neighboring frames'
+  encoder outputs in latent space (temporal conv/attention in the Inter block) before decoding,
+  landmark-conditioning becomes a secondary auxiliary input rather than the primary mechanism.
+  Phase 10 hasn't started — see its entry below for the updated design to build against.
+- **14c. Section 9 revision — Masked-Loss Implementation Detail.** A real, already-shipped bug
+  in Phase 7: masking SSIM/LPIPS by pre-multiplying the *input images* doesn't actually exclude
+  occluded pixels from a receptive-field-based computation — see Phase 7's entry below for what
+  was wrong and the fix.
+- **Section 15 (open questions, renumbered from 14):** GPU question reconfirmed (existing RTX
+  4070 Ti, still need `nvidia-smi` to confirm 12GB vs. 16GB SUPER — resolved decision #1 below
+  assumed SUPER; unchanged). Clean-room approach reconfirmed (matches resolved decision #4).
+  Frame-count guidance refined: **2,000-5,000 diverse frames per identity post-dedup is the
+  target; datasets under ~1,500 frames should retain more redundancy rather than aggressively
+  deduping.** `src`-occlusion-rate question still open in the doc itself, but was separately
+  answered by the user earlier in this project (src is cleaner — resolved decision #2 below,
+  unchanged).
+
 ## Resolved decisions (Section 14 open questions)
 1. **GPU:** RTX 4070 Ti **SUPER (16GB)**. Use the SUPER batch-size targets in Section 12
    (~20-30% higher than the 12GB baseline at a given resolution).
@@ -12,7 +49,10 @@ deliverables and its exit criteria (what "done" means before moving on).
 3. **Frame counts:** small, ~1-5k frames each for `src`/`dst`. Full in-RAM caching (Section 4) is
    feasible — no need for partial/streaming cache logic. Dedup targets (Phase 6) stay conservative;
    at this scale, over-aggressive deduplication risks cutting into pose/lighting coverage more than
-   it saves compute.
+   it saves compute. **Refined 2026-07-28:** target 2,000-5,000 diverse frames per identity
+   post-dedup; datasets under ~1,500 frames should retain more redundancy rather than aggressively
+   deduping (i.e. lower `dfl_torch.dedup`'s `max_representatives`/`hash_max_distance` aggressiveness
+   for small facesets — not yet tuned against real data since none exists in this dev environment).
 4. **Port strategy (expanded — supersedes the original "literal port vs. clean-room" framing):**
    **Clean-room reimplementation**, not a port. Additional directives from the user:
    - Scan the **entire** codebase for TensorFlow/`leras` dependencies, not just `Model_SAEHD` —
@@ -98,6 +138,13 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   (PatchGAN, for Phase 7), designed idiomatically in PyTorch — not a line-by-line port. Matches
   `Model_SAEHD`'s documented behavior (layer types, downsampling/upsampling structure, output
   shapes) as a functional spec, but implementation is native.
+- **Weight initialization (Section 14a point 3, added 2026-07-28):** every network
+  (`Encoder`/`Inter`/`Decoder` here, plus `UNetPatchDiscriminator` and `XSegNet` in their own
+  phases) calls `dfl_torch.init.apply_xavier_init(self)` at the end of `__init__`, matching
+  leras' actual (empirically verified) `glorot_uniform`-weights/zero-bias default — see
+  `dfl_torch/init.py`'s docstring for how this was verified rather than assumed.
+  `tests/test_weight_init.py`: 5 tests checking every network's Conv2d/ConvTranspose2d/Linear
+  weights fall within the theoretical Xavier-uniform bound and biases are exactly zero.
 - Characterization tests: new modules' outputs compared against the golden fixtures within a
   documented tolerance (structural/statistical match, not bit-exact — a from-scratch reimplementation
   won't reproduce TF numerics exactly, but shapes, value ranges, and gradient flow should match).
@@ -213,7 +260,8 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   writing the port, same methodology as Phase 1. 11 tests total: `tests/test_xseg_shapes.py`
   (shapes, sigmoid range, `pretrain` skip-zeroing behaves differently from normal mode, full
   gradient flow through the dense bottleneck) + `tests/characterization/test_xseg_against_tf_fixtures.py`
-  (shape/range match against the TF fixtures).
+  (shape/range match against the TF fixtures). Also uses `apply_xavier_init` (Section 14a point
+  3, see Phase 1) — covered by `tests/test_weight_init.py`.
 - **Done:** `dfl_torch/masking.py` — `combine_masks` (`face_mask * (1 - occlusion_mask)`,
   Section 6.1), `feather_mask` (reuses DFL's existing proportional erode+blur convention from
   `facelib.LandmarksProcessor.blur_image_hull_mask`, generalized to any mask), and
@@ -265,32 +313,53 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   error (`tf.square`), not L1/absolute error. `dfl_torch/losses.py`'s `masked_reconstruction_loss`
   matches what the code actually does, documented explicitly (same spirit as the earlier
   PNG-vs-JPG metadata-format correction in Phase 2).
-- **Masking convention matches DFL's actual code, not a new design:** DFL pre-multiplies
-  target/pred by the mask *before* computing loss or feeding the discriminator
-  (`gpu_target_src_masked_opt = gpu_target_src*gpu_target_srcm_blur`, then
-  `DLoss(..., self.D_src(gpu_pred_src_src_masked_opt))`), then averages over *all* pixels, not
-  just masked-in ones — which is what makes a heavily-occluded frame contribute proportionally
-  less automatically (Section 7's severity-based downweighting falls out of this for free,
-  no separate weighting step needed). `dfl_torch/losses.py` follows the same convention:
-  functions take already-masked pred/target, mirroring DFL rather than doing windowed-map-level
-  masking inside SSIM.
-- **Done:** `dfl_torch/losses.py` — `ssim` (single-scale, Gaussian-windowed, clean-room; DFL's
-  is multi-scale via `tf.image.ssim_multiscale`, simplified here), `masked_reconstruction_loss`
-  (MS-SSIM + squared error per above), `LPIPSLoss` (wraps the `lpips` package, AlexNet backbone —
-  lightest available, though its ImageNet weights are still a ~230MB cached download),
-  `discriminator_gan_loss` / `generator_adversarial_loss` (BCE-with-logits, matching DFL's actual
-  `DLoss` — **not hinge loss**, confirmed by reading `Model_SAEHD/Model.py`'s `DLoss` definition
-  rather than assuming a convention) using the Phase 1 discriminator.
+- **Masking convention revised 2026-07-28 by requirements.md Section 14c — a real bug in what
+  had already shipped here.** The original implementation pre-multiplied pred/target by the mask
+  *before* computing SSIM (mirroring DFL's actual `gpu_target_src_masked_opt =
+  gpu_target_src*gpu_target_srcm_blur` convention), then averaged the resulting map over *all*
+  pixels. Section 14c's critique, confirmed by working through the math here: zeroing both
+  images over the occluded region makes SSIM there compute the similarity of two identical
+  all-zero patches — a **fake ssim≈1** ("perfectly matched"), not an excluded region — and that
+  fake-perfect score then got blended into the loss average right alongside the real ones,
+  systematically *underestimating* the loss for occluded frames instead of excluding the occluded
+  region. (This also silently broke the "severity-based downweighting falls out of averaging over
+  everything" reasoning from the original implementation — averaging over everything only
+  downweights correctly if the excluded region contributes *zero*, not a fake-favorable score.)
+  **Fix:** compute the SSIM map (and squared-error map) from the *unmasked* images, then average
+  only over the masked-in region — `dfl_torch/losses.py`'s new `masked_mean(x, mask)` helper,
+  used by `masked_reconstruction_loss` and `LPIPSLoss`, matching Section 14c's literal
+  `(error * mask).sum() / mask.sum()` formula. `ssim` was split into `ssim_map` (full per-pixel
+  map, used internally for masking) and `ssim` (whole-image scalar, for unmasked use).
+  Known, expected side effect: SSIM's 11×11 window still legitimately blends a few pixels near
+  the mask *boundary* (occluded pixels within the window radius of a visible pixel do get a
+  small nonzero gradient, from the visible side's windowed statistics depending on them) — that's
+  inherent to any windowed metric, not a bug, and `tests/test_losses.py` checks the *interior* of
+  the occluded region (safely beyond the window radius) for exact-zero gradient/loss-invariance
+  rather than the whole region.
+  The GAN/adversarial loss is **not** affected — Section 14c is explicitly scoped to "LPIPS and
+  SSIM specifically," and DFL's own code really does feed a mask-multiplied image into the
+  discriminator, so `discriminator_gan_loss`/`generator_adversarial_loss` keep the
+  mask-the-input-image convention unchanged.
+- **Done:** `dfl_torch/losses.py` — `ssim_map`/`ssim` (single-scale, Gaussian-windowed,
+  clean-room; DFL's is multi-scale via `tf.image.ssim_multiscale`, simplified here),
+  `masked_reconstruction_loss` (MS-SSIM + squared error, correctly masked per above),
+  `LPIPSLoss` (wraps the `lpips` package in `spatial=True` mode so it returns a per-pixel map
+  that can be correctly masked post-hoc, rather than masking the input images pre-network;
+  forces `.eval()` and overrides `train()` to stay frozen even if a parent module calls
+  `.train()` on it, per Section 14c's explicit frozen/eval requirement), `discriminator_gan_loss`
+  / `generator_adversarial_loss` (BCE-with-logits, matching DFL's actual `DLoss` — **not hinge
+  loss**, confirmed by reading `Model_SAEHD/Model.py`'s `DLoss` definition rather than assuming a
+  convention) using the Phase 1 discriminator.
 - **Not implemented:** identity-preservation loss (ArcFace embedding similarity) — same
   heavier-dependency deferral as Phase 5's mic detector and Phase 6's ArcFace dedup signal.
-- Exit: 14 tests in `tests/test_losses.py`. Covers the plan's key exit criterion directly —
-  `test_masked_reconstruction_loss_zero_gradient_on_fully_masked_out_region` constructs a
-  synthetic fully-occluded half-image and asserts zero gradient in that region and nonzero
-  gradient in the visible region (plus a same-loss-value test confirming the masked region's
-  *prediction content* doesn't affect the loss at all, not just its gradient). GAN losses and
-  LPIPS tested for finiteness, directional correctness (discriminator loss lower when
-  confidently correct; generator loss lower when fooling the discriminator), gradient flow, and
-  (LPIPS) mask-respecting behavior.
+- Exit: 16 tests in `tests/test_losses.py`. Covers the plan's key exit criterion directly —
+  interior-of-occluded-region gets exactly zero gradient and the loss is invariant to that
+  region's prediction content (both explicitly excluding the boundary-bleed pixels, see above).
+  GAN losses and LPIPS tested for finiteness, directional correctness (discriminator loss lower
+  when confidently correct; generator loss lower when fooling the discriminator), gradient flow,
+  mask-respecting behavior, and — the new Section 14c requirement — that LPIPS stays in eval
+  mode even inside a training wrapper and that `.backward()` never populates `.grad` on its
+  frozen parameters.
 
 ## Phase 8 — Training loop
 - LR schedule: warmup + cosine decay (or one-cycle).
@@ -313,15 +382,27 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
 - Exit: confirms base quality is acceptable *before* investing in occlusion-reconstruction
   (Section 8.3 sequencing — this is a hard gate, not a nice-to-have).
 
-## Phase 10 — Mouth-occlusion reconstruction (weighted toward `dst`)
+## Phase 10 — Mouth-occlusion reconstruction (weighted toward `dst`) — design revised 2026-07-28
+- **Design superseded by requirements.md Section 14b** (not started yet, so this is a plan update
+  only, no rework needed). Original Section 8.1 point 3 proposed a two-stage design: a separate
+  geometry predictor (estimating mouth shape from visible context/temporal neighbors) feeding the
+  generator as ControlNet-style conditioning. **Section 14b replaces this** with a simpler,
+  end-to-end differentiable approach — **latent temporal fusion**:
+  - Pass the current frame + N neighboring frames (e.g. t-2..t+2) through the shared `Encoder`.
+  - Fuse the resulting latent vectors across the time dimension inside the `Inter` block (a
+    lightweight temporal convolution or attention mechanism), before passing the fused
+    representation to `Decoder`.
+  - No separate 3D mesh renderer or standalone geometry-prediction network needed — the network
+    learns directly to fill occluded regions using unoccluded latent information from
+    neighboring frames.
+  - Landmark-conditioning (original point 1) can still be added as an auxiliary input channel
+    alongside this, but is no longer the primary recovery mechanism.
+  - Implementation implication: `dfl_torch/df_archi.py`'s `Inter` will need a temporal-fusion
+    variant (or an alternate `Inter` class) that accepts a stack of encoder outputs across the
+    time window rather than a single one — not built yet, noted here for when this phase starts.
 - Since `src` is cleaner/mostly unoccluded (resolved decision #2), this phase's effort applies
   almost entirely to `dst`. `src` still gets standard occlusion masking (Phase 5) but isn't a
   reconstruction-quality target — there's little occluded `src` data to reconstruct.
-- Landmark-conditioned generation: feed rendered landmark heatmap / mouth-region mask as auxiliary
-  generator input alongside the (possibly occluded) raw image.
-- Temporal context: short neighboring-frame window to inform reconstruction of an occluded frame.
-- Optional two-stage: separate geometry predictor (from visible context/temporal neighbors) →
-  conditioning input to generator, ControlNet-style.
 - Applies only to occluded `dst` frames; explicitly no effect on the clean-frame majority
   (Section 8.2 limitation to set expectations on).
 - Exit: qualitative A/B (Section 11.7) between Phase 9 checkpoint and this checkpoint specifically
