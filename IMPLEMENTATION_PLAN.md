@@ -612,15 +612,47 @@ Three concrete gaps closed:
 - Full-model `torch.compile()` wrap (on top of BF16 autocast, separate benefit per Section 4).
 - Gradient accumulation tuning, multi-GPU (`DistributedDataParallel`) implementation.
 
-## Phase 12a — Inference/merge pipeline port (new — required for usable output, not in original build order)
-- Port `mainscripts/Merger.py` (loads trained model, blends swapped face into target video/frames)
-  to use the Phase 1/5 PyTorch modules instead of TF/`leras`. Without this, a trained PyTorch model
-  has no way to actually produce output video — it's a hard requirement for "done," even though
-  requirements.md's Section 13 build order doesn't list it explicitly (that list stops at training).
-- Opportunistic, lower-priority alongside/after: `mainscripts/Sorter.py`, `mainscripts/XSegUtil.py`,
+## Phase 12a — Inference/merge pipeline port (done, 2026-07-28 — required for usable output, not in original build order)
+- **Done:** `dfl_torch/merge.py`, `main.py merge_torch` — a **clean-room, standalone pipeline,
+  not a patch to `mainscripts/Merger.py`/`merger/MergeMasked.py`**, same approach as Phase 4's
+  `extract.py`: parallel implementation, legacy code untouched until ready to fully retire.
+  `merger/MergeMasked.py` supports many optional modes (raw-rgb/raw-predict, hist-match, seamless
+  clone, seven XSeg-based mask-combination variants, two-pass merging, super-resolution via a
+  face enhancer, seven color-transfer algorithms, a custom-face-type path) — `merge_one_frame`
+  covers the single most common path (overlay blending with the model's own learned mask +
+  Reinhard color transfer, DFL's default `color_transfer_mode`), not every mode; the rest are
+  tracked here, not silently dropped.
+  - `merge_one_frame(model, frame_bgr, face_landmarks, resolution, ...)`: crop via
+    `facelib.LandmarksProcessor.get_transform_mat` (reused unchanged, same as `extract.py`) →
+    `model.swap()` → optional Reinhard color transfer → mask erode/blur → warp back
+    (`WARP_INVERSE_MAP`) → paste into the original frame. `merge_video_frames`: batches this over
+    a frame sequence, passing frames with no matching aligned face through unchanged, writes one
+    merged image per frame.
+  - `main.py merge_torch`: loads a `train_torch` checkpoint, reads per-frame
+    `source_filename`/`source_landmarks` back out of `extract_torch`'s DFLJPG output (the same
+    fields `extract.py` writes) to know which original frame each aligned face came from and
+    where its landmarks are, then merges. Added to the TF-init-skip list alongside
+    `train_torch`/`extract_torch`.
+  - **Found and fixed a real bug while wiring `merge_video_frames`**, not caught by inspection —
+    a test that exercises actual "frame with no aligned face" pass-through: `landmarks_by_frame.
+    get(str(path)) or landmarks_by_frame.get(path)` raised `ValueError: truth value of an array
+    with more than one element is ambiguous` whenever the *first* lookup actually succeeded (a
+    numpy array's truthiness with the `or` operator, not the `None`-vs-missing case the code was
+    written for). Fixed with explicit `is not None` chaining.
+  - 5 tests in `tests/test_merge.py`, including a "background far from the face is pixel-exact
+    unchanged" check that initially failed for the wrong reason: pure-random-scatter synthetic
+    landmarks (not shaped like a face) produced a wildly ill-conditioned
+    `get_transform_mat` fit whose crop region spanned *thousands* of pixels outside a 256px test
+    frame — not a `merge.py` bug, a bad test fixture. Fixed by reusing the anatomically-plausible
+    (jaw/brow/nose/eye/mouth-shaped) synthetic landmark generator already built for the
+    `extract.py` fixtures instead of random points.
+  - Verified with a real end-to-end CLI run: `train_torch` → hand-built `extract_torch`-shaped
+    DFLJPG metadata → `merge_torch` → a real output frame written to disk.
+- Opportunistic, lower-priority, not started: `mainscripts/Sorter.py`, `mainscripts/XSegUtil.py`,
   `mainscripts/FacesetEnhancer.py`, `facelib/FaceEnhancer.py`, `mainscripts/dev_misc.py` — each
   gets ported or dropped based on whether the target workflow actually uses it; not blocking.
-- Exit: end-to-end run — trained checkpoint → `Merger` → output video — on a short clip.
+  Assembling merged frames into an actual output video (ffmpeg) also not done — same as DFL's own
+  `main.py videoed` commands, a separate step from producing the merged frame images.
 
 ---
 

@@ -11,7 +11,7 @@ if __name__ == "__main__":
     # skip initializing the legacy TF device-detection subprocess for them, since that requires
     # TensorFlow to be importable, which the separate PyTorch dev/train environment doesn't have
     # (see IMPLEMENTATION_PLAN.md / memory on the two-environment split).
-    _TORCH_ONLY_SUBCOMMANDS = ("train_torch", "extract_torch")
+    _TORCH_ONLY_SUBCOMMANDS = ("train_torch", "extract_torch", "merge_torch")
     if not any(cmd in sys.argv for cmd in _TORCH_ONLY_SUBCOMMANDS):
         from core.leras import nn
         nn.initialize_main_env()
@@ -105,6 +105,59 @@ if __name__ == "__main__":
     p.add_argument('--max-pitch', type=float, dest="max_pitch", default=60.0, help="Discard frames beyond this absolute pitch (degrees).")
     p.add_argument('--max-roll', type=float, dest="max_roll", default=45.0, help="Discard frames beyond this absolute roll (degrees).")
     p.set_defaults(func=process_extract_torch)
+
+    def process_merge_torch(arguments):
+        osex.set_process_lowest_prio()
+        import torch
+        from core import pathex
+        from DFLIMG import DFLJPG
+        from facelib import FaceType as _FaceType
+        from dfl_torch.merge import merge_video_frames
+        from dfl_torch.model import SAEHDModel
+
+        checkpoint = torch.load(arguments.checkpoint, map_location="cpu", weights_only=True)
+        model = SAEHDModel(
+            arguments.resolution, e_dims=arguments.e_dims, ae_dims=arguments.ae_dims,
+            d_dims=arguments.d_dims, d_mask_dims=arguments.d_mask_dims,
+        )
+        model.load_state_dict(checkpoint["model"])
+
+        # aligned_dir holds extract_torch's output -- each DFLJPG carries the original frame's
+        # path (source_filename) and original-frame-space landmarks (source_landmarks), which is
+        # exactly what merge_video_frames needs to re-locate and re-align the face per frame.
+        landmarks_by_frame = {}
+        for aligned_path in pathex.get_image_paths(arguments.aligned_dir):
+            dflimg = DFLJPG.load(aligned_path)
+            if dflimg is None or not dflimg.has_data():
+                continue
+            source_filename = dflimg.get_source_filename()
+            source_landmarks = dflimg.get_source_landmarks()
+            if source_filename and source_landmarks is not None:
+                landmarks_by_frame[source_filename] = source_landmarks
+
+        frame_paths = pathex.get_image_paths(arguments.frames_dir)
+        merged_count = merge_video_frames(
+            model, frame_paths, landmarks_by_frame, arguments.output_dir, arguments.resolution,
+            face_type=_FaceType.fromString(arguments.face_type),
+            erode=arguments.erode, blur=arguments.blur, color_transfer=not arguments.no_color_transfer,
+        )
+        print(f"Merged {merged_count}/{len(frame_paths)} frames ({len(frame_paths) - merged_count} passed through unchanged, no matching aligned face).")
+
+    p = subparsers.add_parser("merge_torch", help="Merge a trained PyTorch SAEHD model's swap into video frames — see IMPLEMENTATION_PLAN.md Phase 12a.")
+    p.add_argument('--frames-dir', required=True, action=fixPathAction, dest="frames_dir", help="Directory of original (un-aligned) video frames to merge into.")
+    p.add_argument('--aligned-dir', required=True, action=fixPathAction, dest="aligned_dir", help="Directory of aligned faces (extract_torch output) providing per-frame landmarks.")
+    p.add_argument('--checkpoint', required=True, action=fixPathAction, dest="checkpoint", help="Path to a train_torch checkpoint (e.g. <model-dir>/checkpoints/best.pt).")
+    p.add_argument('--output-dir', required=True, action=fixPathAction, dest="output_dir", help="Output directory for merged frames.")
+    p.add_argument('--resolution', type=int, dest="resolution", default=128, help="Must match the checkpoint's training resolution.")
+    p.add_argument('--e-dims', type=int, dest="e_dims", default=64, help="Must match the checkpoint's training e_dims.")
+    p.add_argument('--ae-dims', type=int, dest="ae_dims", default=256, help="Must match the checkpoint's training ae_dims.")
+    p.add_argument('--d-dims', type=int, dest="d_dims", default=64, help="Must match the checkpoint's training d_dims.")
+    p.add_argument('--d-mask-dims', type=int, dest="d_mask_dims", default=22, help="Must match the checkpoint's training d_mask_dims.")
+    p.add_argument('--face-type', dest="face_type", choices=['half_face', 'full_face', 'whole_face', 'head'], default='full_face')
+    p.add_argument('--erode', type=int, dest="erode", default=0, help="Erode (positive) or dilate (negative) the blend mask, in pixels.")
+    p.add_argument('--blur', type=int, dest="blur", default=0, help="Gaussian blur radius for the blend mask edge, in pixels.")
+    p.add_argument('--no-color-transfer', action="store_true", dest="no_color_transfer", default=False, help="Disable Reinhard color transfer of the swapped face to the destination's color statistics.")
+    p.set_defaults(func=process_merge_torch)
 
     def process_sort(arguments):
         osex.set_process_lowest_prio()
