@@ -160,9 +160,23 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   (`DFLIMG/DFLIMG.py`) only recognizes `.jpg` — the actual on-disk aligned-faceset format is JPG
   with embedded metadata, not PNG. Doesn't change anything downstream; noted for accuracy.
 - `dfl_torch/data.py`: `SAEHDFaceDataset` (wraps `SampleLoader.load(SampleType.FACE, ...)`,
-  resizes to target resolution, returns CHW float32 `[0, 1]` image + mask tensors — XSeg mask if
-  present, else `LandmarksProcessor.get_image_hull_mask`) + `build_dataloader()`
-  (`pin_memory=True`, `persistent_workers`, `prefetch_factor=4` per Section 4).
+  resizes to target resolution, returns CHW float32 `[0, 1]` `(warped, target, mask)` tensor
+  triples — XSeg mask if present, else `LandmarksProcessor.get_image_hull_mask`) +
+  `build_dataloader()` (`pin_memory=True`, `persistent_workers`, `prefetch_factor=4` per Section 4).
+- **Random-warp augmentation added 2026-07-28** (was a documented gap in the end-to-end
+  orchestration work below until this point): reuses `core.imagelib.warp`'s `gen_warp_params`/
+  `warp_by_params` **unchanged** (framework-agnostic, pure NumPy/OpenCV — no reimplementation),
+  matching `models/Model_SAEHD/Model.py`'s actual sample configuration exactly: `warped` gets the
+  full elastic-grid distortion + shared affine (rotation/scale/translate/flip) augmentation;
+  `target` and `mask` get only that same affine/flip part (no elastic distortion) — sharing one
+  `warp_params` draw keeps `warped`/`target`/`mask` positionally aligned, only the elastic warp
+  differs. `warp_augment=False` collapses `warped` to equal `target` (e.g. for eval/preview).
+  Augmentation is deliberately **not** part of the in-RAM cache — only the expensive decode/mask
+  step is cached; fresh random params are drawn on every `__getitem__` call, or caching would
+  defeat the point of augmentation.
+  **Not yet built** (Section 4 also mentions these, lower priority than geometric warp): color
+  transfer/HSV-shift/downsample/noise/blur/jpeg augmentation, and moving any of it to GPU via
+  `kornia`.
 - Given the small (~1-5k frame) faceset size (resolved decision #3), `cache_in_ram=True` (default)
   eagerly decodes every sample once at construction and holds tensors in memory — recommend
   `num_workers=0` with this, since the point of caching is avoiding repeat decode cost, and
@@ -180,11 +194,13 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
 - Tests (Section 11.4, `tests/test_data_pipeline.py`): sample count, item shapes/dtype, value
   range (including a real bug caught here — `cv2.resize(..., INTER_CUBIC)` overshoots `[0, 1]`
   near hard edges and wasn't being clamped on the image, only the mask; fixed), mask
-  non-degeneracy, cached-vs-uncached equivalence, batch shapes, empty-directory error handling.
+  non-degeneracy, cached-vs-uncached decode equivalence (compared pre-augmentation, since warp
+  augmentation is randomized fresh regardless of caching), `warp_augment=True/False` behavior,
+  fresh-random-params-per-access, batch shapes, empty-directory error handling.
   Fixture faceset: `tests/fixtures/faceset/` (3 synthetic images with procedurally generated
   68-point landmarks embedded via `DFLJPG`, checked in; regenerate via
   `tests/fixtures/generate_face_fixture.py`).
-- Exit: 7/7 tests pass on CPU (`.venv-torch`); in-RAM cache path verified identical to non-cached.
+- Exit: 10/10 tests pass on CPU (`.venv-torch`).
 
 ## Phase 3 — Precision (BF16 autocast) (done)
 - `dfl_torch/precision.py`: `autocast_context(device_type)` wraps
@@ -414,19 +430,22 @@ that's already been proven to compose correctly, not code whose integration is u
   needed both outputs in its loss to check the *whole* decoder).
 - **`dfl_torch/train.py`:** orchestrates data loading → `SAEHDModel` → BF16 autocast → masked
   reconstruction (+ optional GAN) loss → LR schedule/EMA/grad accumulation/checkpointing/logging
-  into one `train(...)` function plus an `argparse` CLI. **Known simplification, not yet built:**
-  DFL trains on a randomly-warped input against an unwarped target (the "random_warp"
-  augmentation, an elastic-warp denoising objective) — `dfl_torch/data.py` doesn't implement that
-  yet, so this trains input==target for now (same simplification the Phase 8 overfit test
-  already uses). Swapping in real warp augmentation later doesn't require changing `train.py` —
-  the loader would just start returning a separate warped-input/target pair per sample.
+  into one `train(...)` function plus an `argparse` CLI. Trains on the encoder seeing the
+  elastically-warped `warped` image, comparing against `target` (same affine/flip augmentation,
+  no elastic distortion) — DFL's actual `warp=True`/`warp=False` sample-pair convention, once
+  `dfl_torch/data.py` grew random-warp augmentation (see Phase 2's updated entry above — this was
+  a documented gap here initially, closed the same day).
 - `tests/test_train_e2e.py`: 3 tests against the checked-in fixture faceset (both src and dst
   point at the same 3-image fixture directory, since there's no separate real dataset) — a full
   run writes valid checkpoints that reload cleanly into a fresh model, a run with `gan_power > 0`
-  exercises the discriminator path too, and a longer (60-step) run confirms the loss in the last
-  third of training is under half the first third's average (proving the pieces genuinely learn
-  together, not just "runs without crashing").
-- Exit: 127 tests passing total (was 118 before this).
+  exercises the discriminator path too, and a longer (150-step) run confirms the loss keeps
+  dropping (last third under 92% of the first third's average — deliberately not a dramatic
+  threshold: with real warp augmentation every step sees a *different* random distortion of the
+  same 3 images, so the toy model has to learn an actual "undo the warp" function rather than
+  memorize a fixed mapping, a genuinely harder objective than the pre-augmentation version of
+  this test; empirically 10-19% reduction across several seeds at this step count).
+- Exit: 130 tests passing total (was 118 before this cross-cutting work; +9 for the SAEHDModel/
+  train.py assembly, +3 net for random-warp augmentation added the same day).
 
 ## Phase 9 — Validate on clean-frame majority
 - First real GPU training run (RTX 4070 Ti SUPER, 16GB), on the 60-70% unoccluded frames, using

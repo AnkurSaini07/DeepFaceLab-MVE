@@ -7,13 +7,13 @@ BF16 autocast (dfl_torch.precision) -> masked reconstruction + optional GAN loss
 actually compose into a working training loop (tests/test_train_e2e.py runs this for real, on
 CPU, against the checked-in fixture faceset).
 
-**Known simplification, not yet built:** DFL trains the autoencoder on a randomly-warped input
-against an unwarped target (an elastic-warp denoising objective — the "random_warp" augmentation
-option). `dfl_torch/data.py` doesn't implement that augmentation yet, so this script currently
-trains input==target (a plain autoencoding objective) — the same simplification
-`tests/test_training.py`'s overfit-one-sample test already uses. Swap in real warp augmentation
-once the data pipeline grows it; nothing else here needs to change to pick that up (the loader
-would just start returning a separate warped-input/target pair per sample).
+Uses DFL's actual random-warp augmentation (`dfl_torch.data.SAEHDFaceDataset`, reusing
+`core.imagelib.warp` unchanged): the encoder sees an elastically-warped `warped` image, and the
+reconstruction is compared against `target` — the same sample with the same affine/flip
+augmentation but no elastic distortion, matching `models/Model_SAEHD/Model.py`'s actual
+`warp=True`/`warp=False` sample pair. (`tests/test_training.py`'s overfit-one-sample test doesn't
+go through this data pipeline at all — it trains directly on a synthetic in-memory tensor to
+validate loop wiring in isolation, so warp augmentation doesn't apply there.)
 """
 import argparse
 from pathlib import Path
@@ -84,17 +84,20 @@ def train(
     optimizer.zero_grad()
     last_recon_loss = None
     for step in range(total_steps):
-        src_img, src_mask = next(src_iter)
-        dst_img, dst_mask = next(dst_iter)
-        src_img, src_mask = src_img.to(device), src_mask.to(device)
-        dst_img, dst_mask = dst_img.to(device), dst_mask.to(device)
+        # warped_*: elastically-distorted input the encoder sees. target_*/*_mask: the same
+        # sample with only the shared affine/flip augmentation (no elastic warp) — what the
+        # reconstruction is compared against. See dfl_torch/data.py's SAEHDFaceDataset docstring.
+        src_warped, src_target, src_mask = next(src_iter)
+        dst_warped, dst_target, dst_mask = next(dst_iter)
+        src_warped, src_target, src_mask = src_warped.to(device), src_target.to(device), src_mask.to(device)
+        dst_warped, dst_target, dst_mask = dst_warped.to(device), dst_target.to(device), dst_mask.to(device)
 
         with autocast_context(device_type):
-            pred_src_src, pred_src_mask = model.forward_src(src_img)
-            pred_dst_dst, pred_dst_mask = model.forward_dst(dst_img)
+            pred_src_src, pred_src_mask = model.forward_src(src_warped)
+            pred_dst_dst, pred_dst_mask = model.forward_dst(dst_warped)
 
-            recon_loss = masked_reconstruction_loss(pred_src_src, src_img, src_mask) \
-                + masked_reconstruction_loss(pred_dst_dst, dst_img, dst_mask)
+            recon_loss = masked_reconstruction_loss(pred_src_src, src_target, src_mask) \
+                + masked_reconstruction_loss(pred_dst_dst, dst_target, dst_mask)
             mask_loss = (pred_src_mask - src_mask).pow(2).mean() + (pred_dst_mask - dst_mask).pow(2).mean()
             gen_loss = recon_loss + mask_loss
 
@@ -110,7 +113,7 @@ def train(
         if discriminator is not None:
             disc_optimizer.zero_grad()
             with autocast_context(device_type):
-                _, real_logits = discriminator(src_img * src_mask)
+                _, real_logits = discriminator(src_target * src_mask)
                 _, fake_logits_detached = discriminator((pred_src_src * src_mask).detach())
                 disc_loss = discriminator_gan_loss(real_logits, fake_logits_detached)
             disc_loss.backward()
