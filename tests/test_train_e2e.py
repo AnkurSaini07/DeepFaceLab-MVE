@@ -79,6 +79,18 @@ def test_train_with_pixel_augmentations_runs_end_to_end(tmp_path):
     assert isinstance(model, SAEHDModel)
 
 
+def test_train_with_compile_model_runs_end_to_end_and_checkpoint_has_no_orig_mod_prefix(tmp_path):
+    """Also the regression check for the _orig_mod. state_dict-key gotcha: checkpoints must
+    stay loadable into a plain (non-compiled) SAEHDModel regardless of compile_model."""
+    model, ema = train(**_default_kwargs(tmp_path, total_steps=3, warmup_steps=1, checkpoint_every=2, compile_model=True))
+    assert isinstance(model, SAEHDModel)
+
+    checkpoint = torch.load(tmp_path / "checkpoints" / "latest.pt", map_location="cpu", weights_only=True)
+    assert not any(k.startswith("_orig_mod.") for k in checkpoint["model"].keys())
+    reloaded = SAEHDModel(RESOLUTION, e_dims=8, ae_dims=16, d_dims=8, d_mask_dims=4)
+    reloaded.load_state_dict(checkpoint["model"])  # must not raise
+
+
 def test_train_with_lpips_weight_runs_end_to_end(tmp_path):
     pytest.importorskip("lpips")
     try:

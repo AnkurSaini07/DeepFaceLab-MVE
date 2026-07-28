@@ -165,6 +165,7 @@ def train(
     random_downsample=False,
     random_hsv_shift_amount=0.0,
     random_shadow=False,
+    compile_model=False,
 ):
     """
     Runs training from `resume_from`'s saved step (or 0) up to `total_steps`, returning
@@ -175,6 +176,12 @@ def train(
     `random_blur`/`random_noise`/`random_jpeg`/`random_downsample`/`random_hsv_shift_amount`/
     `random_shadow` (all off/0 by default): dfl_torch.augment's pixel-level augmentations, applied
     to both src and dst training data (never validation — see build_train_val_dataloaders).
+
+    `compile_model=False` (default): wraps the model in `torch.compile()` for forward passes
+    (Section 4/14a). Off by default — compiling adds real overhead on the *first* call (tracing +
+    codegen) that only pays off over many subsequent identically-shaped calls, so it's a net loss
+    for short CPU runs/tests; the real benefit is on the CUDA target hardware over a full training
+    run's worth of steps.
     """
     device = torch.device(device_type)
     output_dir = Path(output_dir)
@@ -199,6 +206,16 @@ def train(
     preview_dst_batch = next(iter(dst_train_loader)) if preview_every > 0 else None
 
     model = SAEHDModel(resolution, e_dims=e_dims, ae_dims=ae_dims, d_dims=d_dims, d_mask_dims=d_mask_dims).to(device)
+    # forward_model is what forward passes go through -- model itself stays the uncompiled
+    # reference for state_dict()/load_state_dict()/EMA, since torch.compile()'s wrapper prefixes
+    # every key with "_orig_mod." (verified empirically), which would make checkpoints
+    # incompatible with the plain model used elsewhere (dfl_torch/merge.py, a fresh non-compiled
+    # SAEHDModel on resume, etc.) if state_dict() were called on the compiled wrapper instead.
+    # Compiling is applied to the model only, per Section 14a point 4 ("apply torch.compile() to
+    # the core model modules only... keep loss calculation, mask blending, and the optimizer step
+    # outside the compiled graph") -- loss computation in _compute_losses/_evaluate happens on
+    # forward_model's *outputs*, not inside the compiled graph itself.
+    forward_model = torch.compile(model) if compile_model else model
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = build_lr_scheduler(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
     ema = EMA(model, decay=0.999)
@@ -252,11 +269,11 @@ def train(
 
         with autocast_context(device_type):
             pred_src_src, _, src_loss, src_recon_loss, src_lpips, src_identity = _compute_losses(
-                model, discriminator, src_warped, src_target, src_mask, gan_power,
+                forward_model, discriminator, src_warped, src_target, src_mask, gan_power,
                 lpips_loss_fn, lpips_weight, identity_loss_fn, identity_weight, is_src=True,
             )
             _, _, dst_loss, dst_recon_loss, dst_lpips, _dst_identity = _compute_losses(
-                model, discriminator, dst_warped, dst_target, dst_mask, gan_power,
+                forward_model, discriminator, dst_warped, dst_target, dst_mask, gan_power,
                 lpips_loss_fn, lpips_weight, identity_loss_fn, identity_weight, is_src=False,
             )
             gen_loss = src_loss + dst_loss
@@ -286,15 +303,15 @@ def train(
             logger.log_scalars(log_dict, step)
 
         if preview_every > 0 and step % preview_every == 0:
-            _save_preview(model, preview_src_batch, preview_dst_batch, device, preview_dir / f"step_{step:07d}.png")
+            _save_preview(forward_model, preview_src_batch, preview_dst_batch, device, preview_dir / f"step_{step:07d}.png")
 
         if step % checkpoint_every == 0 and step > 0:
-            val_loss = _evaluate(model, src_val_loader, dst_val_loader, device, lpips_loss_fn, identity_loss_fn)
+            val_loss = _evaluate(forward_model, src_val_loader, dst_val_loader, device, lpips_loss_fn, identity_loss_fn)
             logger.log_scalar("loss/val", val_loss, step)
             checkpoint_manager.maybe_save(metric=val_loss, state_dict=_checkpoint_state())
             checkpoint_manager.save_latest(_checkpoint_state())
 
-    val_loss = _evaluate(model, src_val_loader, dst_val_loader, device, lpips_loss_fn, identity_loss_fn)
+    val_loss = _evaluate(forward_model, src_val_loader, dst_val_loader, device, lpips_loss_fn, identity_loss_fn)
     logger.log_scalar("loss/val", val_loss, total_steps)
     checkpoint_manager.maybe_save(metric=val_loss, state_dict=_checkpoint_state())
     checkpoint_manager.save_latest(_checkpoint_state())
@@ -327,6 +344,7 @@ def main():
     parser.add_argument("--random-downsample", action="store_true", default=False)
     parser.add_argument("--random-hsv-shift-amount", type=float, default=0.0)
     parser.add_argument("--random-shadow", action="store_true", default=False)
+    parser.add_argument("--compile-model", action="store_true", default=False, help="Wrap the model in torch.compile() (Section 4/14a) -- most beneficial on CUDA over a full run, not short CPU runs.")
     args = parser.parse_args()
     train(
         args.src_dir, args.dst_dir, args.output_dir,
@@ -337,7 +355,7 @@ def main():
         num_workers=args.num_workers, resume_from=args.resume_from, device_type=args.device_type,
         random_blur=args.random_blur, random_noise=args.random_noise, random_jpeg=args.random_jpeg,
         random_downsample=args.random_downsample, random_hsv_shift_amount=args.random_hsv_shift_amount,
-        random_shadow=args.random_shadow,
+        random_shadow=args.random_shadow, compile_model=args.compile_model,
     )
 
 

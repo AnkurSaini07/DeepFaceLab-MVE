@@ -629,8 +629,34 @@ Three concrete gaps closed:
   investment (Section 8.3 step 6) — decide whether to iterate on reconstruction or stop here.
 
 ## Phase 12 — Optional / later
-- Full-model `torch.compile()` wrap (on top of BF16 autocast, separate benefit per Section 4).
-- Gradient accumulation tuning, multi-GPU (`DistributedDataParallel`) implementation.
+- **`torch.compile()` wiring done, 2026-07-28** — `train()`'s `compile_model=False` param
+  (default off). Per Section 14a point 4 ("apply `torch.compile()` to the core model modules
+  only... keep loss calculation, mask blending, and the optimizer step outside the compiled
+  graph"): a separate `forward_model = torch.compile(model) if compile_model else model` is used
+  only for forward passes (training step, validation, preview); `model` itself stays the
+  uncompiled reference for `state_dict()`/`load_state_dict()`/`EMA`.
+  - **Found and fixed a real checkpoint-compatibility bug, verified not assumed:** calling
+    `.state_dict()` on a `torch.compile()`-wrapped model prefixes every key with `"_orig_mod."`
+    — confirmed empirically, then confirmed the fix (checkpointing from the separate uncompiled
+    `model` reference instead) produces byte-identical, prefix-free keys that load cleanly into a
+    fresh plain `SAEHDModel`, whether or not that run used `compile_model=True`. Without this,
+    compiled-run checkpoints would silently fail to load anywhere else in the pipeline
+    (`dfl_torch/merge.py`, a non-compiled resume, `merge_torch`'s CLI). Regression-tested in
+    `tests/test_train_e2e.py`.
+  - Verified `torch.compile()` works on this machine at all (not guaranteed — historically
+    version/platform-dependent) via a standalone smoke test before wiring it in, then verified
+    against the real `SAEHDModel` (forward + backward, no graph breaks or errors) before adding
+    the `train()` param.
+  - **Default off, deliberately:** compiling adds real tracing/codegen overhead on the *first*
+    call that only amortizes over many subsequent identically-shaped calls — a net loss for the
+    short CPU runs used throughout this dev/test environment. The actual benefit is on the CUDA
+    target hardware over a full training run's worth of steps, which can't be measured here.
+  - Wired through `main.py train_torch --compile-model` and `dfl_torch/train.py`'s own CLI.
+- Not done: gradient accumulation tuning (the mechanism itself — `GradientAccumulator` — was
+  built in Phase 8; "tuning" here means picking good `accumulation_steps` values against real
+  VRAM limits, which needs the actual GPU), multi-GPU (`DistributedDataParallel`) implementation
+  (explicitly "design for it, don't implement yet" per Section 10 — nothing in this codebase's
+  class-based, no-global-state design blocks adding DDP later).
 
 ## Phase 12a — Inference/merge pipeline port (done, 2026-07-28 — required for usable output, not in original build order)
 - **Done:** `dfl_torch/merge.py`, `main.py merge_torch` — a **clean-room, standalone pipeline,
