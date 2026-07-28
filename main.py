@@ -32,6 +32,16 @@ if __name__ == "__main__":
         def __call__(self, parser, namespace, values, option_string=None):
             setattr(namespace, self.dest, os.path.abspath(os.path.expanduser(values)))
 
+    def _torch_cuda_available():
+        # Lazy import: main.py's other subcommands run against the legacy TF env, which may not
+        # have torch installed at all — never import torch at module load time. Shared by
+        # train_torch/extract_torch/merge_torch's --device-type defaults.
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except ImportError:
+            return False
+
     exit_code = 0
 
     parser = argparse.ArgumentParser()
@@ -115,12 +125,14 @@ if __name__ == "__main__":
         from dfl_torch.merge import merge_video_frames
         from dfl_torch.model import SAEHDModel
 
-        checkpoint = torch.load(arguments.checkpoint, map_location="cpu", weights_only=True)
+        device = torch.device(arguments.device_type)
+        checkpoint = torch.load(arguments.checkpoint, map_location=device, weights_only=True)
         model = SAEHDModel(
             arguments.resolution, e_dims=arguments.e_dims, ae_dims=arguments.ae_dims,
             d_dims=arguments.d_dims, d_mask_dims=arguments.d_mask_dims,
         )
         model.load_state_dict(checkpoint["model"])
+        model.to(device)
 
         # aligned_dir holds extract_torch's output -- each DFLJPG carries the original frame's
         # path (source_filename) and original-frame-space landmarks (source_landmarks), which is
@@ -140,6 +152,7 @@ if __name__ == "__main__":
             model, frame_paths, landmarks_by_frame, arguments.output_dir, arguments.resolution,
             face_type=_FaceType.fromString(arguments.face_type),
             erode=arguments.erode, blur=arguments.blur, color_transfer=not arguments.no_color_transfer,
+            device=arguments.device_type,
         )
         print(f"Merged {merged_count}/{len(frame_paths)} frames ({len(frame_paths) - merged_count} passed through unchanged, no matching aligned face).")
 
@@ -157,6 +170,7 @@ if __name__ == "__main__":
     p.add_argument('--erode', type=int, dest="erode", default=0, help="Erode (positive) or dilate (negative) the blend mask, in pixels.")
     p.add_argument('--blur', type=int, dest="blur", default=0, help="Gaussian blur radius for the blend mask edge, in pixels.")
     p.add_argument('--no-color-transfer', action="store_true", dest="no_color_transfer", default=False, help="Disable Reinhard color transfer of the swapped face to the destination's color statistics.")
+    p.add_argument('--device-type', dest="device_type", default="cuda" if _torch_cuda_available() else "cpu", help="'cuda' or 'cpu'.")
     p.set_defaults(func=process_merge_torch)
 
     def process_sort(arguments):
@@ -308,15 +322,6 @@ if __name__ == "__main__":
             random_shadow=arguments.random_shadow,
             compile_model=arguments.compile_model,
         )
-
-    def _torch_cuda_available():
-        # Lazy import: main.py's other subcommands run against the legacy TF env, which may not
-        # have torch installed at all — never import torch at module load time.
-        try:
-            import torch
-            return torch.cuda.is_available()
-        except ImportError:
-            return False
 
     p = subparsers.add_parser("train_torch", help="Train the PyTorch SAEHD (DF-variant) model — see IMPLEMENTATION_PLAN.md.")
     p.add_argument('--training-data-src-dir', required=True, action=fixPathAction, dest="training_data_src_dir", help="Dir of extracted SRC faceset.")

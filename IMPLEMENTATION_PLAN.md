@@ -695,6 +695,18 @@ Three concrete gaps closed:
     fields `extract.py` writes) to know which original frame each aligned face came from and
     where its landmarks are, then merges. Added to the TF-init-skip list alongside
     `train_torch`/`extract_torch`.
+  - **Found and fixed a real GPU-usability gap 2026-07-28** (user asked "any GPU-specific code
+    left?", prompting an audit): `merge_torch` had no `--device-type` flag at all, and the loaded
+    model was never moved off CPU — meaning merge would silently run CPU-only even on a machine
+    with a GPU, unlike `train_torch` (which already had this). Not "leftover GPU-only code" in
+    the sense the question implied (audited `dfl_torch/`: no hardcoded `.cuda()` calls anywhere,
+    everything is properly parameterized by `device`/`device_type`) — the opposite problem, GPU
+    acceleration silently unavailable where it should have been offered. Fixed: `model.to(device)`
+    after loading the checkpoint, `--device-type` added to the `merge_torch` subparser, `_torch_
+    cuda_available()` (previously defined between `extract_torch` and `train_torch`, too late for
+    `merge_torch`'s parser construction to call it) moved to the top of the file so all three
+    `dfl_torch` subcommands share one definition. Verified with a real end-to-end CLI run with
+    `--device-type cpu` explicit (this dev machine has no GPU to verify the `cuda` path itself).
   - **Found and fixed a real bug while wiring `merge_video_frames`**, not caught by inspection —
     a test that exercises actual "frame with no aligned face" pass-through: `landmarks_by_frame.
     get(str(path)) or landmarks_by_frame.get(path)` raised `ValueError: truth value of an array
