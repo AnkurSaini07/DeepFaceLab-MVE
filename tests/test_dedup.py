@@ -6,10 +6,13 @@ import numpy as np
 import pytest
 
 from dfl_torch.dedup import (
+    FaceEmbedder,
     bucket_by_pose,
+    cluster_by_embedding_similarity,
     cluster_by_hash,
     compute_dhash,
     deduplicate,
+    embedding_cosine_similarity,
     hamming_distance,
     select_cluster_representatives,
     sharpness_score,
@@ -155,3 +158,60 @@ def test_bucket_by_pose_ignores_roll():
     buckets = bucket_by_pose(poses)
     assert len(buckets) == 1
     assert len(next(iter(buckets.values()))) == 3
+
+
+# --- FaceEmbedder / embedding similarity (network-dependent: downloads+caches VGGFace2 weights) ---
+
+def _make_embedder():
+    pytest.importorskip("facenet_pytorch")
+    try:
+        return FaceEmbedder()
+    except Exception as e:
+        pytest.skip(f"could not initialize FaceEmbedder (likely no network for weight download): {e}")
+
+
+def test_embedding_cosine_similarity_identical_vectors_is_one():
+    v = np.array([1.0, 2.0, 3.0])
+    assert embedding_cosine_similarity(v, v) == pytest.approx(1.0)
+
+
+def test_embedding_cosine_similarity_orthogonal_vectors_is_zero():
+    a = np.array([1.0, 0.0])
+    b = np.array([0.0, 1.0])
+    assert embedding_cosine_similarity(a, b) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_embedding_cosine_similarity_opposite_vectors_is_negative_one():
+    v = np.array([1.0, 2.0, 3.0])
+    assert embedding_cosine_similarity(v, -v) == pytest.approx(-1.0)
+
+
+def test_face_embedder_produces_consistent_embedding_for_same_image():
+    embedder = _make_embedder()
+    img = _base_image(128, seed=0)
+    emb_a = embedder.embed(img)
+    emb_b = embedder.embed(img)
+    assert emb_a.shape == (512,)
+    np.testing.assert_allclose(emb_a, emb_b)
+
+
+def test_face_embedder_accepts_float_and_uint8_consistently():
+    embedder = _make_embedder()
+    img_uint8 = _base_image(128, seed=0)
+    img_float = img_uint8.astype(np.float32) / 255.0
+    emb_uint8 = embedder.embed(img_uint8)
+    emb_float = embedder.embed(img_float)
+    np.testing.assert_allclose(emb_uint8, emb_float, atol=1e-4)
+
+
+def test_cluster_by_embedding_similarity_groups_identical_embeddings():
+    embeddings = [np.array([1.0, 0.0]), np.array([1.0, 0.01]), np.array([0.0, 1.0])]
+    clusters = cluster_by_embedding_similarity(embeddings, similarity_threshold=0.99)
+    sizes = sorted(len(c) for c in clusters)
+    assert sizes == [1, 2]
+
+
+def test_cluster_by_embedding_similarity_high_threshold_separates_everything():
+    embeddings = [np.array([1.0, 0.0]), np.array([0.9, 0.1]), np.array([0.0, 1.0])]
+    clusters = cluster_by_embedding_similarity(embeddings, similarity_threshold=0.9999)
+    assert len(clusters) == 3

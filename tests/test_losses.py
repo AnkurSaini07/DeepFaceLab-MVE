@@ -219,3 +219,74 @@ def test_lpips_no_gradient_flows_into_frozen_network():
     assert pred.grad is not None  # gradient flows into the actual inputs...
     for p in lpips_loss.parameters():
         assert p.grad is None  # ...but never into the frozen backbone's own weights
+
+
+# --- IdentityLoss (network-dependent: downloads+caches facenet-pytorch's VGGFace2 weights) ---
+
+def _make_identity_loss():
+    pytest.importorskip("facenet_pytorch")
+    from dfl_torch.losses import IdentityLoss
+    try:
+        return IdentityLoss()
+    except Exception as e:
+        pytest.skip(f"could not initialize IdentityLoss (likely no network for weight download): {e}")
+
+
+def test_identity_loss_zero_for_identical_images():
+    identity_loss = _make_identity_loss()
+    x = torch.rand(1, 3, 128, 128)
+    loss = identity_loss(x, x)
+    assert loss.abs() < 1e-4
+
+
+def test_identity_loss_positive_for_different_images():
+    identity_loss = _make_identity_loss()
+    torch.manual_seed(0)
+    x = torch.rand(1, 3, 128, 128)
+    y = torch.rand(1, 3, 128, 128)
+    loss = identity_loss(x, y)
+    assert loss > 0
+
+
+def test_identity_loss_stays_frozen_and_eval_even_if_wrapped_in_a_training_module():
+    identity_loss = _make_identity_loss()
+
+    class Wrapper(torch.nn.Module):
+        def __init__(self, identity_loss):
+            super().__init__()
+            self.identity_loss = identity_loss
+
+    wrapper = Wrapper(identity_loss)
+    wrapper.train()
+    assert not identity_loss.model.training
+    for p in identity_loss.parameters():
+        assert not p.requires_grad
+
+
+def test_identity_loss_no_gradient_flows_into_frozen_network():
+    identity_loss = _make_identity_loss()
+    pred = torch.rand(1, 3, 128, 128, requires_grad=True)
+    target = torch.rand(1, 3, 128, 128)
+
+    loss = identity_loss(pred, target)
+    loss.backward()
+
+    assert pred.grad is not None
+    for p in identity_loss.parameters():
+        assert p.grad is None
+
+
+def test_identity_loss_respects_mask():
+    identity_loss = _make_identity_loss()
+    torch.manual_seed(0)
+    x = torch.rand(1, 3, 128, 128)
+    y = x.clone()
+    y[:, :, :, 64:] = torch.rand(1, 3, 128, 64)  # differs only in the right half
+
+    full_mask = torch.ones(1, 1, 128, 128)
+    left_only_mask = torch.ones(1, 1, 128, 128)
+    left_only_mask[:, :, :, 64:] = 0.0
+
+    loss_full = identity_loss(x, y, mask=full_mask)
+    loss_left_only = identity_loss(x, y, mask=left_only_mask)
+    assert loss_left_only.abs() < loss_full.abs()

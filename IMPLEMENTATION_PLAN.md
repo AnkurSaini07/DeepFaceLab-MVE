@@ -378,10 +378,14 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   ignoring roll as an in-plane framing detail rather than a distinct pose — shared with Section
   5.2 pose-balancing per Section 5.3's "combine ... as one shared pipeline stage"). 12 tests in
   `tests/test_dedup.py`.
-- **Not implemented:** ArcFace embedding similarity (Section 5.3's third near-duplicate signal,
-  for same-pose-different-pixel duplicates dHash won't catch) — needs an ArcFace model, same
-  category of heavier-dependency deferral as Phase 5's mic detector/SAM (InsightFace model zoo or
-  a standalone ONNX checkpoint, not pulled in yet).
+- **Embedding-similarity dedup added 2026-07-28** (Section 5.3's third near-duplicate signal, for
+  same-pose-different-pixel duplicates dHash won't catch): `FaceEmbedder` (wraps `facenet-pytorch`'s
+  `InceptionResnetV1`, VGGFace2-pretrained — see `dfl_torch/losses.py`'s `IdentityLoss` docstring
+  for why this substitutes for the literal ArcFace/InsightFace name; here it's about not
+  maintaining two face-embedding stacks, not an autograd requirement, since dedup needs no
+  gradients), `embedding_cosine_similarity`, `cluster_by_embedding_similarity` (same union-find
+  algorithm as `cluster_by_hash`, refactored into a shared `_union_find_cluster` helper — cosine
+  similarity instead of Hamming distance as the pairwise criterion). 7 new tests.
 - **Not yet done:** actually running this against real `src`/`dst` footage (no real footage is
   available in this dev environment — only synthetic test fixtures) — exit criteria below apply
   once real data exists.
@@ -431,9 +435,25 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   / `generator_adversarial_loss` (BCE-with-logits, matching DFL's actual `DLoss` — **not hinge
   loss**, confirmed by reading `Model_SAEHD/Model.py`'s `DLoss` definition rather than assuming a
   convention) using the Phase 1 discriminator.
-- **Not implemented:** identity-preservation loss (ArcFace embedding similarity) — same
-  heavier-dependency deferral as Phase 5's mic detector and Phase 6's ArcFace dedup signal.
-- Exit: 16 tests in `tests/test_losses.py`. Covers the plan's key exit criterion directly —
+- **Identity-preservation loss added 2026-07-28** — `IdentityLoss`, `1 - cosine_similarity`
+  between predicted and target embeddings from a frozen `facenet-pytorch` `InceptionResnetV1`
+  (VGGFace2-pretrained), **not literally ArcFace/InsightFace** despite requirements.md naming it.
+  Reason, verified empirically rather than assumed: InsightFace's real ArcFace models are ONNX
+  (via `onnxruntime`) — confirmed working for inference in this environment, but `onnxruntime`
+  sessions aren't part of PyTorch's autograd graph, so gradients can't flow back through them
+  into the generator, which a training-time loss term requires. `facenet-pytorch` is genuinely
+  PyTorch-native (verified: gradients flow into its input, none into its own frozen params) —
+  same substitution pattern as Phase 4's MediaPipe-instead-of-InsightFace detector choice. Mask
+  (if given) is pre-multiplied into the input images before embedding, unlike LPIPS/SSIM — this
+  network reduces a crop to one embedding vector rather than a per-pixel map, so there's no
+  windowed-metric fake-perfect-score pitfall (Section 14c) to design around here. Applies only to
+  the src reconstruction in `train.py` (`identity_weight` param), matching the GAN loss's
+  is-src-only convention — it's `decoder_src`'s output whose identity fidelity is actually the
+  objective, both during training and at `swap()` inference time.
+- Exit: 21 tests in `tests/test_losses.py` (16 + 5 for `IdentityLoss`, same test shape as
+  `LPIPSLoss`'s: zero-for-identical, positive-for-different, frozen/eval-even-when-wrapped,
+  no-gradient-into-frozen-network, mask-respecting). Covers the plan's key exit criterion
+  directly —
   interior-of-occluded-region gets exactly zero gradient and the loss is invariant to that
   region's prediction content (both explicitly excluding the boundary-bleed pixels, see above).
   GAN losses and LPIPS tested for finiteness, directional correctness (discriminator loss lower

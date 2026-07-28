@@ -291,6 +291,7 @@ if __name__ == "__main__":
             gan_power=arguments.gan_power,
             gan_dims=arguments.gan_dims,
             lpips_weight=arguments.lpips_weight,
+            identity_weight=arguments.identity_weight,
             accumulation_steps=arguments.accumulation_steps,
             device_type=arguments.device_type,
             val_fraction=arguments.val_fraction,
@@ -332,6 +333,7 @@ if __name__ == "__main__":
     p.add_argument('--gan-power', type=float, dest="gan_power", default=0.0, help="Adversarial loss weight (0 disables the discriminator).")
     p.add_argument('--gan-dims', type=int, dest="gan_dims", default=16, help="Discriminator base channel dims.")
     p.add_argument('--lpips-weight', type=float, dest="lpips_weight", default=0.0, help="LPIPS perceptual loss weight (0 skips loading LPIPS entirely).")
+    p.add_argument('--identity-weight', type=float, dest="identity_weight", default=0.0, help="Identity-preservation loss weight (0 skips loading the identity network entirely).")
     p.add_argument('--accumulation-steps', type=int, dest="accumulation_steps", default=1, help="Gradient accumulation steps (simulates a larger batch size).")
     p.add_argument('--device-type', dest="device_type", default="cuda" if _torch_cuda_available() else "cpu", help="'cuda' or 'cpu'.")
     p.add_argument('--val-fraction', type=float, dest="val_fraction", default=0.05, help="Fraction of each faceset held out for validation (Section 10).")

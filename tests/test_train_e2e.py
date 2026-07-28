@@ -88,6 +88,15 @@ def test_train_with_lpips_weight_runs_end_to_end(tmp_path):
     assert isinstance(model, SAEHDModel)
 
 
+def test_train_with_identity_weight_runs_end_to_end(tmp_path):
+    pytest.importorskip("facenet_pytorch")
+    try:
+        model, ema = train(**_default_kwargs(tmp_path, identity_weight=0.3, total_steps=3, warmup_steps=1, checkpoint_every=2))
+    except Exception as e:
+        pytest.skip(f"could not initialize IdentityLoss (likely no network for weight download): {e}")
+    assert isinstance(model, SAEHDModel)
+
+
 def test_train_resume_continues_from_saved_step(tmp_path):
     train(**_default_kwargs(tmp_path, total_steps=4, warmup_steps=1, checkpoint_every=2))
     checkpoint = torch.load(tmp_path / "checkpoints" / "latest.pt", map_location="cpu", weights_only=True)

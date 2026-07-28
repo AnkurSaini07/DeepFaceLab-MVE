@@ -32,12 +32,21 @@ GAN adversarial loss (BCE-with-logits, matching DFL's actual `DLoss`, not hinge 
 `models/Model_SAEHD/Model.py`'s `DLoss` for the source of this convention) using the Phase 1
 discriminator (`dfl_torch.discriminator.UNetPatchDiscriminator`).
 
-Per Section 14c: LPIPS (and ArcFace, when implemented) must stay frozen and in `.eval()` mode —
-`LPIPSLoss` enforces this by overriding `train()` so a parent module's `.train()` call can't
-accidentally flip it into training mode.
+Per Section 14c: LPIPS and `IdentityLoss` must stay frozen and in `.eval()` mode — both enforce
+this by overriding `train()` so a parent module's `.train()` call can't accidentally flip them
+into training mode.
 
-**Not implemented:** identity-preservation loss (ArcFace embedding similarity) — same
-heavier-dependency deferral as Phase 5's mic detector and Phase 6's ArcFace dedup signal.
+**Identity-preservation loss uses `facenet-pytorch`'s `InceptionResnetV1` (VGGFace2-pretrained),
+not literally ArcFace/InsightFace**, despite requirements.md Section 9 naming ArcFace
+specifically. InsightFace's actual ArcFace models are ONNX (via `onnxruntime`) — verified
+working in this environment, but `onnxruntime` inference sessions aren't part of PyTorch's
+autograd graph, so gradients can't flow back through them into the generator, which a loss term
+computed *during training* requires. `facenet-pytorch` is genuinely PyTorch-native and
+differentiable (verified: gradients flow into its input, none into its own frozen params) — same
+substitution pattern as Phase 4's MediaPipe-instead-of-InsightFace detector choice. Section 5.3's
+dedup embedding-similarity signal doesn't need gradients, so `dfl_torch/dedup.py` uses the same
+`facenet-pytorch` network for consistency (one face-embedding dependency, not two) rather than
+the ONNX ArcFace model, even though gradients aren't the blocker there.
 """
 import torch
 import torch.nn as nn
@@ -136,6 +145,49 @@ class LPIPSLoss(nn.Module):
         if mask is None:
             return lpips_map.mean()
         return masked_mean(lpips_map, mask)
+
+
+class IdentityLoss(nn.Module):
+    """
+    Identity-preservation loss (Section 9): 1 - cosine_similarity between the predicted and
+    target faces' embeddings, from a frozen `facenet-pytorch` `InceptionResnetV1` (VGGFace2
+    weights) — see this module's docstring for why this substitutes for the literal
+    ArcFace/InsightFace requirements.md names (ONNX, not autograd-differentiable).
+
+    Mask, if given, is applied by pre-multiplying the input images (`pred * mask`,
+    `target * mask`) — unlike LPIPS/SSIM, this network reduces the whole crop to a single
+    embedding vector rather than a per-pixel map, so there's no windowed-metric fake-perfect-score
+    pitfall (Section 14c) to avoid; zeroing the occluded region before embedding is the direct,
+    correct way to exclude it from what the identity comparison is based on.
+    """
+
+    def __init__(self):
+        super().__init__()
+        from facenet_pytorch import InceptionResnetV1
+
+        self.model = InceptionResnetV1(pretrained="vggface2")
+        self.model.eval()
+        for p in self.model.parameters():
+            p.requires_grad_(False)
+
+    def train(self, mode=True):
+        # Stays frozen/eval regardless of a parent module's .train() call (Section 14c).
+        return super().train(False)
+
+    def _embed(self, x):
+        x = F.interpolate(x, size=(160, 160), mode="bilinear", align_corners=False)
+        x = x.flip(1)  # this codebase's BGR convention -> the RGB InceptionResnetV1 expects
+        x = (x * 255.0 - 127.5) / 128.0  # facenet_pytorch.fixed_image_standardization, for [0,1] input
+        return self.model(x)
+
+    def forward(self, pred, target, mask=None):
+        if mask is not None:
+            pred = pred * mask
+            target = target * mask
+        pred_emb = self._embed(pred)
+        target_emb = self._embed(target)
+        cos_sim = F.cosine_similarity(pred_emb, target_emb, dim=1)
+        return (1.0 - cos_sim).mean()
 
 
 def discriminator_gan_loss(real_logits, fake_logits):
