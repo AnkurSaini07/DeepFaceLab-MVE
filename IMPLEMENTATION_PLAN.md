@@ -360,9 +360,25 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   (the actually-needed case for this footage) has training data. Both are addable later without
   touching `combine_masks`/`feather_combined_mask` — they just need to produce an occlusion mask
   array in the same format the hand detector does.
-- **Not yet done:** wiring the combined mask into an actual training loss computation (Phase 7
-  territory — loss functions don't exist yet) and `mainscripts/Extractor.py`/inference-time
-  integration.
+- **Face parsing added 2026-07-28** (Section 6.4: "consider replacing/supplementing DFL's default
+  mask generation with a modern face-parsing network (BiSeNet-based) for better boundary
+  precision around hair/glasses/edges"). `dfl_torch/face_parsing.py` — `FaceParser` wraps
+  `zllrunning/face-parsing.PyTorch`'s BiSeNet architecture (via the `face-parsing` PyPI package's
+  model definitions — vendored architecture only, not its CUDA-only inference script, reimplemented
+  here for CPU portability) with the original pretrained CelebAMask-HQ weights. **The original
+  checkpoint is hosted on Google Drive, which isn't reliably automatable** (no stable
+  direct-download URL, confirmation-token dance) — used a Hugging Face mirror instead, verified
+  to share the original's SHA256 across multiple independent HF repos before trusting it, same
+  diligence as Phase 4's vendored MediaPipe→dlib-68 landmark table. `class_map_to_mask`/
+  `face_skin_mask`/`hair_mask`/`glasses_mask` extract binary masks from the 19-class CelebAMask-HQ
+  output. Supplements, doesn't replace, `get_image_hull_mask`/`dfl_torch.masking` — this is an
+  additional, finer-boundary mask source, not a mandatory swap. 10 tests: pure class-map→mask
+  logic (no network) plus network-dependent `FaceParser` smoke tests (same real-photo-accuracy
+  limitation as every other detector in this codebase).
+- **Not yet done:** wiring the combined mask into `dfl_torch/train.py`'s loss computation was
+  actually completed in Phase 7 (this note was stale) — `masked_reconstruction_loss` et al. take
+  the combined mask directly. `mainscripts/Extractor.py`/inference-time integration was
+  superseded by Phase 4's clean-room `dfl_torch/extract.py` rather than patching the legacy file.
 
 ## Phase 6 — Deduplication / pose-balancing (mostly done)
 - Shared pipeline stage applied independently to `src` and `dst` (never against each other, per

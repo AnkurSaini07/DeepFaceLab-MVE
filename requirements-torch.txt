@@ -25,3 +25,4 @@ tensorboard==2.21.0
 # if a plain `pip install -r` on this file fails on this line; all its real runtime deps
 # (torch, numpy, requests, pillow) are already pinned above/satisfied.
 facenet-pytorch==2.6.0
+face-parsing==0.2
