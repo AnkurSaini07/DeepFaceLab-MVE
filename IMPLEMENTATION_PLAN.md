@@ -361,18 +361,35 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   mode even inside a training wrapper and that `.backward()` never populates `.grad` on its
   frozen parameters.
 
-## Phase 8 — Training loop
-- LR schedule: warmup + cosine decay (or one-cycle).
-- EMA shadow weights for preview/inference.
-- Gradient accumulation for effective batch size beyond VRAM limits.
-- Checkpointing by best validation metric (e.g. LPIPS on held-out set), not just latest.
-- Validation split: small held-out `dst` slice never trained on.
-- Logging: LPIPS, identity similarity, loss curves via TensorBoard/W&B.
-- Design (not implement) with `DistributedDataParallel` in mind — avoid singleton/global state
-  that would block multi-GPU later.
-- Exit (Section 11.5): overfit-one-sample test — single image pair, 50-100 steps on CPU, confirm
-  loss decreases and output visually converges to the sample. This is the checkpoint that
-  validates full training-loop wiring before any GPU time is spent.
+## Phase 8 — Training loop (done)
+- **Done:** `dfl_torch/training.py` —
+  - `build_lr_scheduler`: linear warmup + cosine decay (`LambdaLR`-based), `min_lr_ratio` floor
+    instead of decaying to zero.
+  - `EMA`: shadow weights tracked by state-dict name (decay-weighted running average), `update`,
+    `copy_to` (load shadow into a model for preview/inference), `state_dict`/`load_state_dict`
+    for checkpointing.
+  - `GradientAccumulator`: scales the loss by `1/accumulation_steps` before `.backward()`, only
+    calls `optimizer.step()`/`zero_grad()` every N calls to `.step()`.
+  - `train_val_split`: seeded random held-out slice (never trained on), `val_fraction` with a
+    minimum of 1 sample for small datasets.
+  - `CheckpointManager`: `maybe_save` only writes `best.pt` when the given metric actually
+    improves (`higher_is_better` flag for SSIM-like vs. LPIPS-like metrics), `save_latest`
+    always overwrites `latest.pt` — the "best" and "latest" checkpoints are deliberately
+    separate files so a later degraded run can't silently clobber the best one.
+  - `TrainingLogger`: thin wrapper around `torch.utils.tensorboard.SummaryWriter`.
+  - **DDP-readiness (Section 10's "design, don't implement yet"):** every class here takes the
+    model/optimizer it operates on as an explicit constructor/method argument — no module-level
+    singleton or global state — so none of this needs to change when the underlying model is
+    later wrapped in `DistributedDataParallel`.
+- Tests: `tests/test_training.py`, 21 tests covering the scheduler's warmup/decay/floor behavior,
+  EMA's convergence properties, gradient accumulation's step-only-every-N-calls behavior, the
+  validation split's determinism/coverage/no-overlap, and checkpoint save/skip/load correctness.
+- **Exit (Section 11.5) — done:** `test_overfit_one_sample_loss_decreases_and_converges` builds
+  the actual `Encoder`/`Inter`/`Decoder` generator, trains on a single fixed image pair for 100
+  steps using `masked_reconstruction_loss` + `build_lr_scheduler` + Adam, and asserts the loss
+  drops to under 20% of its initial value, keeps improving through the second half of training
+  (not just an early cliff), and the final reconstruction's mean pixel error is under 0.1 —
+  validating the full training-loop wiring end-to-end on CPU before any GPU time is spent.
 
 ## Phase 9 — Validate on clean-frame majority
 - First real GPU training run (RTX 4070 Ti SUPER, 16GB), on the 60-70% unoccluded frames, using
