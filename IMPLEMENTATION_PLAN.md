@@ -174,9 +174,31 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   Augmentation is deliberately **not** part of the in-RAM cache — only the expensive decode/mask
   step is cached; fresh random params are drawn on every `__getitem__` call, or caching would
   defeat the point of augmentation.
-  **Not yet built** (Section 4 also mentions these, lower priority than geometric warp): color
-  transfer/HSV-shift/downsample/noise/blur/jpeg augmentation, and moving any of it to GPU via
-  `kornia`.
+- **Color/noise/blur/downsample/HSV/shadow augmentation added 2026-07-28**
+  (`dfl_torch/augment.py`), closing the rest of Section 4's data-augmentation ask. Reuses
+  `core.imagelib`'s standalone functions (`LinearMotionBlur`, `shadow_highlights_augmentation`)
+  where DFL already factored them out; noise/jpeg/downsample/HSV-shift are reimplemented matching
+  `samplelib/SampleProcessor.py`'s exact formulas, since that logic lives inline inside
+  `SampleProcessor`'s large `process` method rather than as standalone functions.
+  **Confirmed by reading `models/Model_SAEHD/Model.py`'s actual `output_sample_types` config, not
+  assumed:** blur/noise/jpeg/downsample apply *only* to the warped input (the target entry never
+  sets these) — the target must stay a clean ground truth. HSV shift and shadow apply to *both*
+  warped and target with the *same* random draw (both entries pass identical
+  `random_hsv_shift_amount`/`random_shadow` values, sharing the per-sample seed) — keeping color
+  grading consistent between input and target, only geometry/sharpness/noise differs.
+  `SAEHDFaceDataset` gained `random_blur`/`random_noise`/`random_jpeg`/`random_downsample`/
+  `random_hsv_shift_amount`/`random_shadow` params (all off by default); `build_dataloader`/
+  `build_train_val_dataloaders` forward them via `**dataset_kwargs` (validation loader never gets
+  them, matching its existing `warp_augment=False`); `dfl_torch/train.py`'s `train()` and
+  `main.py`'s `train_torch` subcommand both expose them end-to-end. 18 new tests (13 in
+  `tests/test_augment.py` for the augmentation functions themselves, 5 in
+  `tests/test_data_pipeline.py` for the dataset-level wiring/warped-vs-target split) plus 1 new
+  `test_train_e2e.py` case exercising all six flags together through the real CLI.
+  **Not implemented:** `ct_mode` (color transfer against a reference face from a *different*
+  identity's faceset) — needs an additional data source (a random cross-identity sample), a
+  materially separate feature from per-image augmentation. Moving any of this to GPU via `kornia`
+  (Section 4's other suggestion) also not done — profiling to justify it needs real data/hardware
+  anyway, per Section 4's own "profile before further optimization" guidance.
 - Given the small (~1-5k frame) faceset size (resolved decision #3), `cache_in_ram=True` (default)
   eagerly decodes every sample once at construction and holds tensors in memory — recommend
   `num_workers=0` with this, since the point of caching is avoiding repeat decode cost, and

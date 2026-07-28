@@ -220,6 +220,12 @@ if __name__ == "__main__":
             preview_every=arguments.preview_every,
             num_workers=arguments.num_workers,
             resume_from=arguments.resume_from,
+            random_blur=arguments.random_blur,
+            random_noise=arguments.random_noise,
+            random_jpeg=arguments.random_jpeg,
+            random_downsample=arguments.random_downsample,
+            random_hsv_shift_amount=arguments.random_hsv_shift_amount,
+            random_shadow=arguments.random_shadow,
         )
 
     def _torch_cuda_available():
@@ -255,6 +261,12 @@ if __name__ == "__main__":
     p.add_argument('--preview-every', type=int, dest="preview_every", default=0, help="Steps between preview-image saves (0 disables).")
     p.add_argument('--num-workers', type=int, dest="num_workers", default=0, help="DataLoader worker processes.")
     p.add_argument('--resume-from', dest="resume_from", default=None, help="Path to a checkpoint (e.g. <model-dir>/checkpoints/latest.pt) to resume from.")
+    p.add_argument('--random-blur', action="store_true", dest="random_blur", default=False, help="Randomly blur the (warped) training input.")
+    p.add_argument('--random-noise', action="store_true", dest="random_noise", default=False, help="Add random noise to the (warped) training input.")
+    p.add_argument('--random-jpeg', action="store_true", dest="random_jpeg", default=False, help="Randomly JPEG-compress the (warped) training input.")
+    p.add_argument('--random-downsample', action="store_true", dest="random_downsample", default=False, help="Randomly downsample+upsample the (warped) training input.")
+    p.add_argument('--random-hsv-shift-amount', type=float, dest="random_hsv_shift_amount", default=0.0, help="HSV shift augmentation amount (0 disables), applied identically to input and target.")
+    p.add_argument('--random-shadow', action="store_true", dest="random_shadow", default=False, help="Random shadow/highlight augmentation, applied identically to input and target.")
     p.set_defaults(func=process_train_torch)
 
     def process_exportdfm(arguments):

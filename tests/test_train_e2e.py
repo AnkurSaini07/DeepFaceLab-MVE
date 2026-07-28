@@ -70,6 +70,15 @@ def test_train_checkpoint_includes_discriminator_state_when_gan_enabled(tmp_path
     assert "disc_optimizer" in checkpoint
 
 
+def test_train_with_pixel_augmentations_runs_end_to_end(tmp_path):
+    model, ema = train(**_default_kwargs(
+        tmp_path, total_steps=3, warmup_steps=1, checkpoint_every=2,
+        random_blur=True, random_noise=True, random_jpeg=True, random_downsample=True,
+        random_hsv_shift_amount=0.3, random_shadow=True,
+    ))
+    assert isinstance(model, SAEHDModel)
+
+
 def test_train_with_lpips_weight_runs_end_to_end(tmp_path):
     pytest.importorskip("lpips")
     try:

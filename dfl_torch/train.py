@@ -138,21 +138,38 @@ def train(
     preview_every=0,
     num_workers=0,
     resume_from=None,
+    random_blur=False,
+    random_noise=False,
+    random_jpeg=False,
+    random_downsample=False,
+    random_hsv_shift_amount=0.0,
+    random_shadow=False,
 ):
-    """Runs training from `resume_from`'s saved step (or 0) up to `total_steps`, returning
+    """
+    Runs training from `resume_from`'s saved step (or 0) up to `total_steps`, returning
     (model, ema). `lpips_weight=0` (default) skips building the LPIPS network entirely — it's a
-    real (~230MB) download+model on first use, not something to pay for unconditionally."""
+    real (~230MB) download+model on first use, not something to pay for unconditionally.
+
+    `random_blur`/`random_noise`/`random_jpeg`/`random_downsample`/`random_hsv_shift_amount`/
+    `random_shadow` (all off/0 by default): dfl_torch.augment's pixel-level augmentations, applied
+    to both src and dst training data (never validation — see build_train_val_dataloaders).
+    """
     device = torch.device(device_type)
     output_dir = Path(output_dir)
     checkpoint_dir = output_dir / "checkpoints"
     log_dir = output_dir / "logs"
     preview_dir = output_dir / "previews"
 
+    augment_kwargs = dict(
+        random_blur=random_blur, random_noise=random_noise, random_jpeg=random_jpeg,
+        random_downsample=random_downsample, random_hsv_shift_amount=random_hsv_shift_amount,
+        random_shadow=random_shadow,
+    )
     src_train_loader, src_val_loader = build_train_val_dataloaders(
-        src_dir, resolution, batch_size, val_fraction=val_fraction, num_workers=num_workers,
+        src_dir, resolution, batch_size, val_fraction=val_fraction, num_workers=num_workers, **augment_kwargs,
     )
     dst_train_loader, dst_val_loader = build_train_val_dataloaders(
-        dst_dir, resolution, batch_size, val_fraction=val_fraction, num_workers=num_workers,
+        dst_dir, resolution, batch_size, val_fraction=val_fraction, num_workers=num_workers, **augment_kwargs,
     )
     src_iter = _infinite(src_train_loader)
     dst_iter = _infinite(dst_train_loader)
@@ -276,6 +293,12 @@ def main():
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--resume-from", default=None, help="Path to a checkpoint (e.g. output_dir/checkpoints/latest.pt) to resume from")
     parser.add_argument("--device-type", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--random-blur", action="store_true", default=False)
+    parser.add_argument("--random-noise", action="store_true", default=False)
+    parser.add_argument("--random-jpeg", action="store_true", default=False)
+    parser.add_argument("--random-downsample", action="store_true", default=False)
+    parser.add_argument("--random-hsv-shift-amount", type=float, default=0.0)
+    parser.add_argument("--random-shadow", action="store_true", default=False)
     args = parser.parse_args()
     train(
         args.src_dir, args.dst_dir, args.output_dir,
@@ -283,6 +306,9 @@ def main():
         warmup_steps=args.warmup_steps, lr=args.lr, gan_power=args.gan_power, lpips_weight=args.lpips_weight,
         checkpoint_every=args.checkpoint_every, log_every=args.log_every, preview_every=args.preview_every,
         num_workers=args.num_workers, resume_from=args.resume_from, device_type=args.device_type,
+        random_blur=args.random_blur, random_noise=args.random_noise, random_jpeg=args.random_jpeg,
+        random_downsample=args.random_downsample, random_hsv_shift_amount=args.random_hsv_shift_amount,
+        random_shadow=args.random_shadow,
     )
 
 

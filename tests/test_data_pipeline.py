@@ -95,6 +95,64 @@ def test_dataset_raises_on_empty_directory(tmp_path):
         SAEHDFaceDataset(tmp_path, resolution=RESOLUTION)
 
 
+# --- pixel-level augmentation wiring (dfl_torch.augment) ---
+
+def test_pixel_augmentations_default_off_do_not_affect_target():
+    """With no pixel augmentation flags set, warped should only differ from target by the
+    elastic warp (already covered elsewhere) -- this just confirms defaults are all off."""
+    dataset = SAEHDFaceDataset(FIXTURE_FACESET, resolution=RESOLUTION)
+    assert dataset.random_blur is False
+    assert dataset.random_noise is False
+    assert dataset.random_jpeg is False
+    assert dataset.random_downsample is False
+    assert dataset.random_hsv_shift_amount == 0.0
+    assert dataset.random_shadow is False
+
+
+def test_pixel_augmentations_apply_to_warped_not_target():
+    """Blur/noise/jpeg/downsample must never touch the target (ground truth) -- only warped.
+    Disable the elastic warp so warped/target would otherwise be identical, isolating the effect
+    of the pixel augmentations themselves."""
+    dataset = SAEHDFaceDataset(
+        FIXTURE_FACESET, resolution=RESOLUTION, warp_augment=False,
+        random_blur=True, random_noise=True, random_jpeg=True, random_downsample=True,
+    )
+    warped, target, _mask = dataset[0]
+    assert not torch.equal(warped, target)
+
+
+def test_hsv_shift_and_shadow_apply_to_both_warped_and_target_identically():
+    """With warp augmentation off (warped/target start identical) and only HSV shift + shadow
+    enabled, both should still end up identical to each other -- same random draw applied to
+    both, per dfl_torch/data.py's docstring."""
+    dataset = SAEHDFaceDataset(
+        FIXTURE_FACESET, resolution=RESOLUTION, warp_augment=False,
+        random_hsv_shift_amount=0.3, random_shadow=True,
+    )
+    warped, target, _mask = dataset[0]
+    assert torch.equal(warped, target)
+
+
+def test_hsv_shift_and_shadow_actually_change_the_image():
+    dataset_plain = SAEHDFaceDataset(FIXTURE_FACESET, resolution=RESOLUTION, warp_augment=False)
+    dataset_augmented = SAEHDFaceDataset(
+        FIXTURE_FACESET, resolution=RESOLUTION, warp_augment=False,
+        random_hsv_shift_amount=0.3, random_shadow=True,
+    )
+    _, target_plain, _ = dataset_plain[0]
+    _, target_augmented, _ = dataset_augmented[0]
+    assert not torch.equal(target_plain, target_augmented)
+
+
+def test_build_dataloader_forwards_augmentation_kwargs():
+    loader = build_dataloader(
+        FIXTURE_FACESET, resolution=RESOLUTION, batch_size=1, num_workers=0,
+        random_blur=True, random_hsv_shift_amount=0.2,
+    )
+    assert loader.dataset.random_blur is True
+    assert loader.dataset.random_hsv_shift_amount == 0.2
+
+
 # --- build_train_val_dataloaders ---
 
 def test_train_val_dataloaders_split_sizes():
