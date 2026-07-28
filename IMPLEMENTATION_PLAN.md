@@ -391,6 +391,43 @@ current compatible versions, drop `crc32c`/`h5py` if nothing in the ported code 
   (not just an early cliff), and the final reconstruction's mean pixel error is under 0.1 —
   validating the full training-loop wiring end-to-end on CPU before any GPU time is spent.
 
+## Cross-cutting: end-to-end training orchestration (done, 2026-07-28)
+A gap identified after Phase 8: every `dfl_torch` piece (data loading, model, precision, losses,
+training-loop utilities) had its own unit tests, but nothing had ever assembled them into one
+runnable training script — including, critically, **the full DF-variant SAEHD model itself**
+(shared `Encoder`/`Inter` + dual `decoder_src`/`decoder_dst`, the actual face-swap architecture).
+Every prior test exercised a single `Decoder` in isolation; nothing had built or tested the
+two-decoder assembly that makes DF-variant SAEHD a face swapper rather than a generic
+autoencoder. This closes that gap ahead of Phase 9, so Phase 9's real GPU run is exercising code
+that's already been proven to compose correctly, not code whose integration is untested.
+
+- **`dfl_torch/model.py` — `SAEHDModel`:** shared `encoder`/`inter`, separate `decoder_src`/
+  `decoder_dst`, matching `models/Model_SAEHD/Model.py`'s DF-branch construction exactly (same
+  `encoder_out_ch`/`lowest_dense_res` math already used in the Phase 1 fixture-capture script).
+  `forward_src`/`forward_dst` for training (reconstruct through the matching decoder);
+  `swap(dst_image)` for inference (encode dst, decode with the *src* decoder — the actual face
+  swap; only meaningful once trained, not exercised by training itself).
+  `tests/test_model.py`: 6 tests, including confirming `decoder_src`/`decoder_dst` share no
+  parameters (caught one test-authoring mistake along the way: computing gradients from only the
+  RGB output leaves the mask-decoding branch — `upscalem*`/`out_convm`, a disconnected path from
+  the shared latent — with no gradient, which is correct decoder behavior, not a bug; the test
+  needed both outputs in its loss to check the *whole* decoder).
+- **`dfl_torch/train.py`:** orchestrates data loading → `SAEHDModel` → BF16 autocast → masked
+  reconstruction (+ optional GAN) loss → LR schedule/EMA/grad accumulation/checkpointing/logging
+  into one `train(...)` function plus an `argparse` CLI. **Known simplification, not yet built:**
+  DFL trains on a randomly-warped input against an unwarped target (the "random_warp"
+  augmentation, an elastic-warp denoising objective) — `dfl_torch/data.py` doesn't implement that
+  yet, so this trains input==target for now (same simplification the Phase 8 overfit test
+  already uses). Swapping in real warp augmentation later doesn't require changing `train.py` —
+  the loader would just start returning a separate warped-input/target pair per sample.
+- `tests/test_train_e2e.py`: 3 tests against the checked-in fixture faceset (both src and dst
+  point at the same 3-image fixture directory, since there's no separate real dataset) — a full
+  run writes valid checkpoints that reload cleanly into a fresh model, a run with `gan_power > 0`
+  exercises the discriminator path too, and a longer (60-step) run confirms the loss in the last
+  third of training is under half the first third's average (proving the pieces genuinely learn
+  together, not just "runs without crashing").
+- Exit: 127 tests passing total (was 118 before this).
+
 ## Phase 9 — Validate on clean-frame majority
 - First real GPU training run (RTX 4070 Ti SUPER, 16GB), on the 60-70% unoccluded frames, using
   everything through Phase 8. Use the SUPER batch-size targets (~20-30% above the 12GB baseline
