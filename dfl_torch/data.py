@@ -142,3 +142,45 @@ def build_dataloader(samples_path, resolution, batch_size, num_workers=0, subdir
         persistent_workers=num_workers > 0,
         prefetch_factor=4 if num_workers > 0 else None,
     )
+
+
+def build_train_val_dataloaders(samples_path, resolution, batch_size, val_fraction=0.05,
+                                 num_workers=0, subdirs=False, cache_in_ram=True, seed=42):
+    """
+    Section 10's validation split: a small held-out slice never trained on. Two separate
+    SAEHDFaceDataset instances are built against the same samples_path (train: warp-augmented;
+    val: not — evaluation should reflect real, unaugmented faces) and split by disjoint indices
+    from dfl_torch.training.train_val_split. This relies on samplelib.SampleLoader's per-path
+    caching returning the same sample ordering both times, which it does (same directory listing,
+    cached list reused on the second construction) — so the same index always refers to the same
+    underlying frame in both datasets.
+    """
+    from torch.utils.data import Subset
+
+    from dfl_torch.training import train_val_split
+
+    train_dataset = SAEHDFaceDataset(
+        samples_path, resolution, subdirs=subdirs, cache_in_ram=cache_in_ram, warp_augment=True,
+    )
+    val_dataset = SAEHDFaceDataset(
+        samples_path, resolution, subdirs=subdirs, cache_in_ram=cache_in_ram, warp_augment=False,
+    )
+    train_indices, val_indices = train_val_split(len(train_dataset), val_fraction=val_fraction, seed=seed)
+
+    train_loader = DataLoader(
+        Subset(train_dataset, train_indices),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=4 if num_workers > 0 else None,
+    )
+    val_loader = DataLoader(
+        Subset(val_dataset, val_indices),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    return train_loader, val_loader

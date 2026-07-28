@@ -6,10 +6,16 @@ if __name__ == "__main__":
     import multiprocessing
     multiprocessing.set_start_method("spawn")
 
-    from core.leras import nn
-    nn.initialize_main_env()
-    import os
     import sys
+    # train_torch (dfl_torch/) has no TF/leras dependency at all -- skip initializing the legacy
+    # TF device-detection subprocess for it, since that requires TensorFlow to be importable,
+    # which the separate PyTorch dev/train environment doesn't have (see
+    # IMPLEMENTATION_PLAN.md / memory on the two-environment split).
+    if "train_torch" not in sys.argv:
+        from core.leras import nn
+        nn.initialize_main_env()
+
+    import os
     import time
     import argparse
 
@@ -186,7 +192,71 @@ if __name__ == "__main__":
 
     p.add_argument('--execute-program', dest="execute_program", default=[], action='append', nargs='+')
     p.set_defaults (func=process_train)
-    
+
+    def process_train_torch(arguments):
+        osex.set_process_lowest_prio()
+        from dfl_torch.train import train as train_torch
+        train_torch(
+            src_dir=arguments.training_data_src_dir,
+            dst_dir=arguments.training_data_dst_dir,
+            output_dir=arguments.model_dir,
+            resolution=arguments.resolution,
+            e_dims=arguments.e_dims,
+            ae_dims=arguments.ae_dims,
+            d_dims=arguments.d_dims,
+            d_mask_dims=arguments.d_mask_dims,
+            batch_size=arguments.batch_size,
+            total_steps=arguments.total_steps,
+            warmup_steps=arguments.warmup_steps,
+            lr=arguments.lr,
+            gan_power=arguments.gan_power,
+            gan_dims=arguments.gan_dims,
+            lpips_weight=arguments.lpips_weight,
+            accumulation_steps=arguments.accumulation_steps,
+            device_type=arguments.device_type,
+            val_fraction=arguments.val_fraction,
+            checkpoint_every=arguments.checkpoint_every,
+            log_every=arguments.log_every,
+            preview_every=arguments.preview_every,
+            num_workers=arguments.num_workers,
+            resume_from=arguments.resume_from,
+        )
+
+    def _torch_cuda_available():
+        # Lazy import: main.py's other subcommands run against the legacy TF env, which may not
+        # have torch installed at all — never import torch at module load time.
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except ImportError:
+            return False
+
+    p = subparsers.add_parser("train_torch", help="Train the PyTorch SAEHD (DF-variant) model — see IMPLEMENTATION_PLAN.md.")
+    p.add_argument('--training-data-src-dir', required=True, action=fixPathAction, dest="training_data_src_dir", help="Dir of extracted SRC faceset.")
+    p.add_argument('--training-data-dst-dir', required=True, action=fixPathAction, dest="training_data_dst_dir", help="Dir of extracted DST faceset.")
+    p.add_argument('--model-dir', required=True, action=fixPathAction, dest="model_dir", help="Output dir for checkpoints/logs/previews.")
+    p.add_argument('--resolution', type=int, dest="resolution", default=128, help="Face resolution.")
+    p.add_argument('--e-dims', type=int, dest="e_dims", default=64, help="Encoder dimensions.")
+    p.add_argument('--ae-dims', type=int, dest="ae_dims", default=256, help="AutoEncoder dimensions.")
+    p.add_argument('--d-dims', type=int, dest="d_dims", default=64, help="Decoder dimensions.")
+    p.add_argument('--d-mask-dims', type=int, dest="d_mask_dims", default=22, help="Decoder mask dimensions.")
+    p.add_argument('--batch-size', type=int, dest="batch_size", default=4, help="Batch size.")
+    p.add_argument('--total-steps', type=int, dest="total_steps", default=100000, help="Total training steps.")
+    p.add_argument('--warmup-steps', type=int, dest="warmup_steps", default=1000, help="LR warmup steps.")
+    p.add_argument('--lr', type=float, dest="lr", default=5e-5, help="Learning rate.")
+    p.add_argument('--gan-power', type=float, dest="gan_power", default=0.0, help="Adversarial loss weight (0 disables the discriminator).")
+    p.add_argument('--gan-dims', type=int, dest="gan_dims", default=16, help="Discriminator base channel dims.")
+    p.add_argument('--lpips-weight', type=float, dest="lpips_weight", default=0.0, help="LPIPS perceptual loss weight (0 skips loading LPIPS entirely).")
+    p.add_argument('--accumulation-steps', type=int, dest="accumulation_steps", default=1, help="Gradient accumulation steps (simulates a larger batch size).")
+    p.add_argument('--device-type', dest="device_type", default="cuda" if _torch_cuda_available() else "cpu", help="'cuda' or 'cpu'.")
+    p.add_argument('--val-fraction', type=float, dest="val_fraction", default=0.05, help="Fraction of each faceset held out for validation (Section 10).")
+    p.add_argument('--checkpoint-every', type=int, dest="checkpoint_every", default=500, help="Steps between validation + checkpoint saves.")
+    p.add_argument('--log-every', type=int, dest="log_every", default=10, help="Steps between TensorBoard scalar logs.")
+    p.add_argument('--preview-every', type=int, dest="preview_every", default=0, help="Steps between preview-image saves (0 disables).")
+    p.add_argument('--num-workers', type=int, dest="num_workers", default=0, help="DataLoader worker processes.")
+    p.add_argument('--resume-from', dest="resume_from", default=None, help="Path to a checkpoint (e.g. <model-dir>/checkpoints/latest.pt) to resume from.")
+    p.set_defaults(func=process_train_torch)
+
     def process_exportdfm(arguments):
         osex.set_process_lowest_prio()
         from mainscripts import ExportDFM

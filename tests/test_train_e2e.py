@@ -7,6 +7,7 @@ speed, and runs entirely on CPU.
 """
 from pathlib import Path
 
+import pytest
 import torch
 
 from dfl_torch.model import SAEHDModel
@@ -14,10 +15,13 @@ from dfl_torch.train import train
 
 FIXTURE_FACESET = Path(__file__).resolve().parent / "fixtures" / "faceset"
 RESOLUTION = 32
+# 3-image fixture faceset; val_fraction=0.3 -> 1 val / 2 train per src and dst (see
+# dfl_torch.training.train_val_split's max(1, ...) floor).
+VAL_FRACTION = 0.3
 
 
-def test_train_runs_end_to_end_and_writes_checkpoints(tmp_path):
-    model, ema = train(
+def _default_kwargs(tmp_path, **overrides):
+    kwargs = dict(
         src_dir=FIXTURE_FACESET,
         dst_dir=FIXTURE_FACESET,
         output_dir=tmp_path,
@@ -32,7 +36,14 @@ def test_train_runs_end_to_end_and_writes_checkpoints(tmp_path):
         lr=1e-3,
         checkpoint_every=3,
         log_every=1,
+        val_fraction=VAL_FRACTION,
     )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_train_runs_end_to_end_and_writes_checkpoints(tmp_path):
+    model, ema = train(**_default_kwargs(tmp_path))
 
     assert isinstance(model, SAEHDModel)
     assert (tmp_path / "checkpoints" / "best.pt").exists()
@@ -41,31 +52,57 @@ def test_train_runs_end_to_end_and_writes_checkpoints(tmp_path):
 
     checkpoint = torch.load(tmp_path / "checkpoints" / "latest.pt", map_location="cpu", weights_only=True)
     assert checkpoint["step"] == 6
+    assert set(checkpoint.keys()) >= {"model", "optimizer", "scheduler", "ema", "step"}
     # loaded state dict should apply cleanly to a freshly constructed model of the same shape
     reloaded = SAEHDModel(RESOLUTION, e_dims=8, ae_dims=16, d_dims=8, d_mask_dims=4)
     reloaded.load_state_dict(checkpoint["model"])
 
 
 def test_train_with_gan_loss_runs_end_to_end(tmp_path):
-    model, ema = train(
-        src_dir=FIXTURE_FACESET,
-        dst_dir=FIXTURE_FACESET,
-        output_dir=tmp_path,
-        resolution=RESOLUTION,
-        e_dims=8,
-        ae_dims=16,
-        d_dims=8,
-        d_mask_dims=4,
-        gan_dims=4,
-        batch_size=2,
-        total_steps=4,
-        warmup_steps=1,
-        lr=1e-3,
-        gan_power=0.1,
-        checkpoint_every=2,
-        log_every=1,
-    )
+    model, ema = train(**_default_kwargs(tmp_path, gan_dims=4, total_steps=4, warmup_steps=1, gan_power=0.1, checkpoint_every=2))
     assert isinstance(model, SAEHDModel)
+
+
+def test_train_checkpoint_includes_discriminator_state_when_gan_enabled(tmp_path):
+    train(**_default_kwargs(tmp_path, gan_dims=4, total_steps=4, warmup_steps=1, gan_power=0.1, checkpoint_every=2))
+    checkpoint = torch.load(tmp_path / "checkpoints" / "latest.pt", map_location="cpu", weights_only=True)
+    assert "discriminator" in checkpoint
+    assert "disc_optimizer" in checkpoint
+
+
+def test_train_with_lpips_weight_runs_end_to_end(tmp_path):
+    pytest.importorskip("lpips")
+    try:
+        model, ema = train(**_default_kwargs(tmp_path, lpips_weight=0.5, total_steps=3, warmup_steps=1, checkpoint_every=2))
+    except Exception as e:
+        pytest.skip(f"could not initialize LPIPSLoss (likely no network for weight download): {e}")
+    assert isinstance(model, SAEHDModel)
+
+
+def test_train_resume_continues_from_saved_step(tmp_path):
+    train(**_default_kwargs(tmp_path, total_steps=4, warmup_steps=1, checkpoint_every=2))
+    checkpoint = torch.load(tmp_path / "checkpoints" / "latest.pt", map_location="cpu", weights_only=True)
+    assert checkpoint["step"] == 4
+
+    resume_kwargs = _default_kwargs(tmp_path, total_steps=8, warmup_steps=1, checkpoint_every=2)
+    resume_kwargs["resume_from"] = tmp_path / "checkpoints" / "latest.pt"
+    train(**resume_kwargs)
+
+    resumed_checkpoint = torch.load(tmp_path / "checkpoints" / "latest.pt", map_location="cpu", weights_only=True)
+    assert resumed_checkpoint["step"] == 8
+
+
+def test_train_preview_images_written_when_enabled(tmp_path):
+    train(**_default_kwargs(tmp_path, total_steps=4, warmup_steps=1, checkpoint_every=2, preview_every=2))
+    preview_dir = tmp_path / "previews"
+    assert preview_dir.exists()
+    previews = list(preview_dir.iterdir())
+    assert len(previews) >= 2  # steps 0 and 2 at minimum
+
+
+def test_train_no_previews_written_when_disabled(tmp_path):
+    train(**_default_kwargs(tmp_path, total_steps=4, warmup_steps=1, checkpoint_every=2, preview_every=0))
+    assert not (tmp_path / "previews").exists()
 
 
 def test_train_reduces_reconstruction_loss_over_more_steps(tmp_path):

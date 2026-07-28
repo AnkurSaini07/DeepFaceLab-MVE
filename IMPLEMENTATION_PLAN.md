@@ -447,6 +447,64 @@ that's already been proven to compose correctly, not code whose integration is u
 - Exit: 130 tests passing total (was 118 before this cross-cutting work; +9 for the SAEHDModel/
   train.py assembly, +3 net for random-warp augmentation added the same day).
 
+### Training workflow completion (done, 2026-07-28)
+User explicitly asked to complete the training workflow before touching any of the deferred
+"automation" items (real dedup runs, Extractor.py/Merger.py wiring, ArcFace/SAM/mic-detector).
+Three concrete gaps closed:
+
+- **Missing losses wired into `train.py`:** `LPIPSLoss` (Phase 7) and `train_val_split`-based
+  validation (Phase 8) existed but were never used by the actual training loop.
+  - `dfl_torch/data.py`: new `build_train_val_dataloaders` — two `SAEHDFaceDataset` instances
+    against the same `samples_path` (train: `warp_augment=True`; val: `False`, since evaluation
+    should reflect real unaugmented faces), split by disjoint indices from `train_val_split`.
+    Relies on `samplelib.SampleLoader`'s per-path caching returning the same sample ordering on
+    both constructions (verified empirically — the second construction hits the cache, no second
+    "Loading samples" progress bar) so the same index refers to the same frame in both datasets.
+  - `train()` now evaluates on the held-out split every `checkpoint_every` steps and — per
+    Section 10's explicit ask — **checkpoints by validation loss, not training loss**: training
+    loss can keep dropping from memorization while validation loss stalls, and saving "best" by
+    training loss (the original behavior) would miss exactly the overfitting case Section 10
+    calls out.
+  - `lpips_weight` param (default `0`, so LPIPS's ~230MB network is never loaded unless asked
+    for) adds `LPIPSLoss` to both the training loss and the validation metric.
+  - **Confirmed by reading `models/Model_SAEHD/Model.py` directly, not assumed:** the adversarial
+    loss there only ever applies to `pred_src_src`/`target_src`, despite the internal variable
+    name (`D_src_dst_loss`) suggesting otherwise — `dst`'s reconstruction never touches the
+    discriminator. `dfl_torch/train.py` already matched this from when GAN support was first
+    added; confirmed correct, not changed. (DFL also uses noisy/smoothed real-fake labels for GAN
+    stability — not implemented, a minor stabilization detail, noted here rather than silently
+    skipped.)
+- **Checkpoint resume + preview images:**
+  - Checkpoints now include `optimizer`/`scheduler` state (previously only `model`/`ema`/`step`)
+    so `--resume-from` actually continues training rather than restarting the optimizer/LR
+    schedule from scratch. Discriminator + its optimizer are included too when GAN is enabled.
+  - **Found and fixed a real off-by-one bug while wiring resume, not just adding the feature:**
+    checkpoints recorded `step` as the *last completed loop index* (0-based) rather than *steps
+    completed*. Resuming with `start_step = checkpoint["step"]` and `range(start_step,
+    total_steps)` would silently **re-run the last step of the previous run** — caught by a test
+    asserting the exact step count after a resumed run, not by inspection. Fixed by recording
+    `step + 1` in the checkpoint (the correct "next index to run").
+  - `_save_preview`: every `preview_every` steps, runs the model in eval mode on a fixed batch
+    and saves a `torchvision.utils.make_grid` PNG (`[src target | src recon | dst target | dst
+    recon | dst→src swap]`) to `<output_dir>/previews/step_NNNNNNN.png` — a static-file
+    equivalent of DFL's live preview window, since this pipeline has no GUI.
+- **`main.py` CLI integration:** new `train_torch` subcommand (`main.py train_torch
+  --training-data-src-dir ... --training-data-dst-dir ... --model-dir ...`), argument names
+  mirroring `train()`'s parameters.
+  - **Found and fixed a real structural blocker, not just added the subcommand:** `main.py`
+    unconditionally calls `nn.initialize_main_env()` at the very top of `__main__`, before any
+    argument parsing — and that function spawns a subprocess that imports TensorFlow to
+    enumerate devices. Every subcommand, including a brand-new pure-PyTorch one, was blocked on
+    TF being importable. Fixed with a minimal, targeted change: skip that call specifically when
+    `"train_torch" in sys.argv` (checked before any TF-touching import happens) — every other
+    subcommand's behavior is unchanged (verified `main.py train --help` still initializes
+    normally under the `dfl` conda env). Verified `main.py train_torch --help` and a real
+    end-to-end run both work from `.venv-torch` (no TF installed there at all).
+- 10 new/changed tests (140 total): `build_train_val_dataloaders` split correctness/disjointness/
+  augmentation behavior (`tests/test_data_pipeline.py`), checkpoint state-dict keys, discriminator
+  state persistence, LPIPS integration (network-dependent, same skip-if-no-network pattern as
+  other detector/LPIPS tests), resume step-count correctness, preview file creation/non-creation.
+
 ## Phase 9 — Validate on clean-frame majority
 - First real GPU training run (RTX 4070 Ti SUPER, 16GB), on the 60-70% unoccluded frames, using
   everything through Phase 8. Use the SUPER batch-size targets (~20-30% above the 12GB baseline
