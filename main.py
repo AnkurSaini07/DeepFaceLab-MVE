@@ -100,9 +100,6 @@ if __name__ == "__main__":
             arguments.output_dir,
             resolution=arguments.resolution,
             face_type=_FaceType.fromString(arguments.face_type),
-            max_yaw=arguments.max_yaw,
-            max_pitch=arguments.max_pitch,
-            max_roll=arguments.max_roll,
         )
         print(f"Extracted {extracted}, skipped {skipped} (no face detected / pose out of range).")
 
@@ -111,9 +108,6 @@ if __name__ == "__main__":
     p.add_argument('--output-dir', required=True, action=fixPathAction, dest="output_dir", help="Output directory for extracted aligned faces.")
     p.add_argument('--face-type', dest="face_type", choices=['half_face', 'full_face', 'whole_face', 'head'], default='full_face')
     p.add_argument('--resolution', type=int, dest="resolution", default=512, help="Output face resolution.")
-    p.add_argument('--max-yaw', type=float, dest="max_yaw", default=75.0, help="Discard frames beyond this absolute yaw (degrees).")
-    p.add_argument('--max-pitch', type=float, dest="max_pitch", default=60.0, help="Discard frames beyond this absolute pitch (degrees).")
-    p.add_argument('--max-roll', type=float, dest="max_roll", default=45.0, help="Discard frames beyond this absolute roll (degrees).")
     p.set_defaults(func=process_extract_torch)
 
     def process_merge_torch(arguments):
@@ -127,9 +121,13 @@ if __name__ == "__main__":
 
         device = torch.device(arguments.device_type)
         checkpoint = torch.load(arguments.checkpoint, map_location=device, weights_only=True)
+        # Architecture dims come from the checkpoint itself (dfl_torch/train.py saves them) --
+        # not re-typed on the command line, which was error-prone: any mismatch with the actual
+        # training run would fail to load the checkpoint's state dict.
+        resolution = checkpoint["resolution"]
         model = SAEHDModel(
-            arguments.resolution, e_dims=arguments.e_dims, ae_dims=arguments.ae_dims,
-            d_dims=arguments.d_dims, d_mask_dims=arguments.d_mask_dims,
+            resolution, e_dims=checkpoint["e_dims"], ae_dims=checkpoint["ae_dims"],
+            d_dims=checkpoint["d_dims"], d_mask_dims=checkpoint["d_mask_dims"],
         )
         model.load_state_dict(checkpoint["model"])
         model.to(device)
@@ -149,9 +147,8 @@ if __name__ == "__main__":
 
         frame_paths = pathex.get_image_paths(arguments.frames_dir)
         merged_count = merge_video_frames(
-            model, frame_paths, landmarks_by_frame, arguments.output_dir, arguments.resolution,
+            model, frame_paths, landmarks_by_frame, arguments.output_dir, resolution,
             face_type=_FaceType.fromString(arguments.face_type),
-            erode=arguments.erode, blur=arguments.blur, color_transfer=not arguments.no_color_transfer,
             device=arguments.device_type,
         )
         print(f"Merged {merged_count}/{len(frame_paths)} frames ({len(frame_paths) - merged_count} passed through unchanged, no matching aligned face).")
@@ -159,17 +156,9 @@ if __name__ == "__main__":
     p = subparsers.add_parser("merge_torch", help="Merge a trained PyTorch SAEHD model's swap into video frames — see IMPLEMENTATION_PLAN.md Phase 12a.")
     p.add_argument('--frames-dir', required=True, action=fixPathAction, dest="frames_dir", help="Directory of original (un-aligned) video frames to merge into.")
     p.add_argument('--aligned-dir', required=True, action=fixPathAction, dest="aligned_dir", help="Directory of aligned faces (extract_torch output) providing per-frame landmarks.")
-    p.add_argument('--checkpoint', required=True, action=fixPathAction, dest="checkpoint", help="Path to a train_torch checkpoint (e.g. <model-dir>/checkpoints/best.pt).")
+    p.add_argument('--checkpoint', required=True, action=fixPathAction, dest="checkpoint", help="Path to a train_torch checkpoint (e.g. <model-dir>/checkpoints/best.pt). Resolution and model dims are read from the checkpoint itself.")
     p.add_argument('--output-dir', required=True, action=fixPathAction, dest="output_dir", help="Output directory for merged frames.")
-    p.add_argument('--resolution', type=int, dest="resolution", default=128, help="Must match the checkpoint's training resolution.")
-    p.add_argument('--e-dims', type=int, dest="e_dims", default=64, help="Must match the checkpoint's training e_dims.")
-    p.add_argument('--ae-dims', type=int, dest="ae_dims", default=256, help="Must match the checkpoint's training ae_dims.")
-    p.add_argument('--d-dims', type=int, dest="d_dims", default=64, help="Must match the checkpoint's training d_dims.")
-    p.add_argument('--d-mask-dims', type=int, dest="d_mask_dims", default=22, help="Must match the checkpoint's training d_mask_dims.")
     p.add_argument('--face-type', dest="face_type", choices=['half_face', 'full_face', 'whole_face', 'head'], default='full_face')
-    p.add_argument('--erode', type=int, dest="erode", default=0, help="Erode (positive) or dilate (negative) the blend mask, in pixels.")
-    p.add_argument('--blur', type=int, dest="blur", default=0, help="Gaussian blur radius for the blend mask edge, in pixels.")
-    p.add_argument('--no-color-transfer', action="store_true", dest="no_color_transfer", default=False, help="Disable Reinhard color transfer of the swapped face to the destination's color statistics.")
     p.add_argument('--device-type', dest="device_type", default="cuda" if _torch_cuda_available() else "cpu", help="'cuda' or 'cpu'.")
     p.set_defaults(func=process_merge_torch)
 
@@ -300,26 +289,13 @@ if __name__ == "__main__":
             d_mask_dims=arguments.d_mask_dims,
             batch_size=arguments.batch_size,
             total_steps=arguments.total_steps,
-            warmup_steps=arguments.warmup_steps,
-            lr=arguments.lr,
             gan_power=arguments.gan_power,
-            gan_dims=arguments.gan_dims,
             lpips_weight=arguments.lpips_weight,
             identity_weight=arguments.identity_weight,
-            accumulation_steps=arguments.accumulation_steps,
             device_type=arguments.device_type,
-            val_fraction=arguments.val_fraction,
             checkpoint_every=arguments.checkpoint_every,
-            log_every=arguments.log_every,
             preview_every=arguments.preview_every,
-            num_workers=arguments.num_workers,
             resume_from=arguments.resume_from,
-            random_blur=arguments.random_blur,
-            random_noise=arguments.random_noise,
-            random_jpeg=arguments.random_jpeg,
-            random_downsample=arguments.random_downsample,
-            random_hsv_shift_amount=arguments.random_hsv_shift_amount,
-            random_shadow=arguments.random_shadow,
             compile_model=arguments.compile_model,
         )
 
@@ -334,27 +310,14 @@ if __name__ == "__main__":
     p.add_argument('--d-mask-dims', type=int, dest="d_mask_dims", default=22, help="Decoder mask dimensions.")
     p.add_argument('--batch-size', type=int, dest="batch_size", default=4, help="Batch size.")
     p.add_argument('--total-steps', type=int, dest="total_steps", default=100000, help="Total training steps.")
-    p.add_argument('--warmup-steps', type=int, dest="warmup_steps", default=1000, help="LR warmup steps.")
-    p.add_argument('--lr', type=float, dest="lr", default=5e-5, help="Learning rate.")
     p.add_argument('--gan-power', type=float, dest="gan_power", default=0.0, help="Adversarial loss weight (0 disables the discriminator).")
-    p.add_argument('--gan-dims', type=int, dest="gan_dims", default=16, help="Discriminator base channel dims.")
     p.add_argument('--lpips-weight', type=float, dest="lpips_weight", default=0.0, help="LPIPS perceptual loss weight (0 skips loading LPIPS entirely).")
     p.add_argument('--identity-weight', type=float, dest="identity_weight", default=0.0, help="Identity-preservation loss weight (0 skips loading the identity network entirely).")
     p.add_argument('--compile-model', action="store_true", dest="compile_model", default=False, help="Wrap the model in torch.compile() (Section 4/14a) -- most beneficial on CUDA over a full run, not short CPU runs.")
-    p.add_argument('--accumulation-steps', type=int, dest="accumulation_steps", default=1, help="Gradient accumulation steps (simulates a larger batch size).")
     p.add_argument('--device-type', dest="device_type", default="cuda" if _torch_cuda_available() else "cpu", help="'cuda' or 'cpu'.")
-    p.add_argument('--val-fraction', type=float, dest="val_fraction", default=0.05, help="Fraction of each faceset held out for validation (Section 10).")
     p.add_argument('--checkpoint-every', type=int, dest="checkpoint_every", default=500, help="Steps between validation + checkpoint saves.")
-    p.add_argument('--log-every', type=int, dest="log_every", default=10, help="Steps between TensorBoard scalar logs.")
     p.add_argument('--preview-every', type=int, dest="preview_every", default=0, help="Steps between preview-image saves (0 disables).")
-    p.add_argument('--num-workers', type=int, dest="num_workers", default=0, help="DataLoader worker processes.")
     p.add_argument('--resume-from', dest="resume_from", default=None, help="Path to a checkpoint (e.g. <model-dir>/checkpoints/latest.pt) to resume from.")
-    p.add_argument('--random-blur', action="store_true", dest="random_blur", default=False, help="Randomly blur the (warped) training input.")
-    p.add_argument('--random-noise', action="store_true", dest="random_noise", default=False, help="Add random noise to the (warped) training input.")
-    p.add_argument('--random-jpeg', action="store_true", dest="random_jpeg", default=False, help="Randomly JPEG-compress the (warped) training input.")
-    p.add_argument('--random-downsample', action="store_true", dest="random_downsample", default=False, help="Randomly downsample+upsample the (warped) training input.")
-    p.add_argument('--random-hsv-shift-amount', type=float, dest="random_hsv_shift_amount", default=0.0, help="HSV shift augmentation amount (0 disables), applied identically to input and target.")
-    p.add_argument('--random-shadow', action="store_true", dest="random_shadow", default=False, help="Random shadow/highlight augmentation, applied identically to input and target.")
     p.set_defaults(func=process_train_torch)
 
     def process_exportdfm(arguments):

@@ -28,7 +28,6 @@ dropping from memorization while validation loss stalls or rises, and Section 10
 asks for best-by-validation-metric checkpointing to avoid overwriting a good model with a later
 overfit one.
 """
-import argparse
 from pathlib import Path
 
 import torch
@@ -252,6 +251,11 @@ def train(
         state = {
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(), "ema": ema.state_dict(), "step": step + 1,
+            # Architecture dims, so dfl_torch/merge.py (via main.py's merge_torch) can rebuild a
+            # matching SAEHDModel from the checkpoint alone, instead of requiring these to be
+            # re-typed by hand at merge time and silently failing to load on a mismatch.
+            "resolution": resolution, "e_dims": e_dims, "ae_dims": ae_dims,
+            "d_dims": d_dims, "d_mask_dims": d_mask_dims,
         }
         if discriminator is not None:
             state["discriminator"] = discriminator.state_dict()
@@ -319,45 +323,6 @@ def train(
     return model, ema
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Train a PyTorch SAEHD (DF-variant) model.")
-    parser.add_argument("--src-dir", required=True)
-    parser.add_argument("--dst-dir", required=True)
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--resolution", type=int, default=128)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--total-steps", type=int, default=10000)
-    parser.add_argument("--warmup-steps", type=int, default=500)
-    parser.add_argument("--lr", type=float, default=5e-5)
-    parser.add_argument("--gan-power", type=float, default=0.0)
-    parser.add_argument("--lpips-weight", type=float, default=0.0)
-    parser.add_argument("--identity-weight", type=float, default=0.0)
-    parser.add_argument("--checkpoint-every", type=int, default=500)
-    parser.add_argument("--log-every", type=int, default=10)
-    parser.add_argument("--preview-every", type=int, default=0, help="0 disables preview saving")
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--resume-from", default=None, help="Path to a checkpoint (e.g. output_dir/checkpoints/latest.pt) to resume from")
-    parser.add_argument("--device-type", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--random-blur", action="store_true", default=False)
-    parser.add_argument("--random-noise", action="store_true", default=False)
-    parser.add_argument("--random-jpeg", action="store_true", default=False)
-    parser.add_argument("--random-downsample", action="store_true", default=False)
-    parser.add_argument("--random-hsv-shift-amount", type=float, default=0.0)
-    parser.add_argument("--random-shadow", action="store_true", default=False)
-    parser.add_argument("--compile-model", action="store_true", default=False, help="Wrap the model in torch.compile() (Section 4/14a) -- most beneficial on CUDA over a full run, not short CPU runs.")
-    args = parser.parse_args()
-    train(
-        args.src_dir, args.dst_dir, args.output_dir,
-        resolution=args.resolution, batch_size=args.batch_size, total_steps=args.total_steps,
-        warmup_steps=args.warmup_steps, lr=args.lr, gan_power=args.gan_power, lpips_weight=args.lpips_weight,
-        identity_weight=args.identity_weight,
-        checkpoint_every=args.checkpoint_every, log_every=args.log_every, preview_every=args.preview_every,
-        num_workers=args.num_workers, resume_from=args.resume_from, device_type=args.device_type,
-        random_blur=args.random_blur, random_noise=args.random_noise, random_jpeg=args.random_jpeg,
-        random_downsample=args.random_downsample, random_hsv_shift_amount=args.random_hsv_shift_amount,
-        random_shadow=args.random_shadow, compile_model=args.compile_model,
-    )
-
-
-if __name__ == "__main__":
-    main()
+# No standalone CLI here -- `main.py train_torch` is the one entry point for this pipeline (it
+# calls `train()` above directly); a second argparse wrapper in this module would just be a
+# second CLI surface to keep in sync with the first.

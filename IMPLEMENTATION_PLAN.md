@@ -667,7 +667,7 @@ Three concrete gaps closed:
     call that only amortizes over many subsequent identically-shaped calls — a net loss for the
     short CPU runs used throughout this dev/test environment. The actual benefit is on the CUDA
     target hardware over a full training run's worth of steps, which can't be measured here.
-  - Wired through `main.py train_torch --compile-model` and `dfl_torch/train.py`'s own CLI.
+  - Wired through `main.py train_torch --compile-model`.
 - Not done: gradient accumulation tuning (the mechanism itself — `GradientAccumulator` — was
   built in Phase 8; "tuning" here means picking good `accumulation_steps` values against real
   VRAM limits, which needs the actual GPU), multi-GPU (`DistributedDataParallel`) implementation
@@ -758,3 +758,34 @@ Runs continuously from Phase 1 onward, not a separate phase:
 - 11.6 explicitly NOT attempted on CPU: visual quality, convergence, generalization
 - 11.7 LLM qualitative eval harness — can be built in parallel with any phase once sample face
   images exist; not blocking, first real use is Phase 10 exit
+
+## CLI simplification (done, 2026-07-28 — user-requested cleanup before first real training run)
+User wanted the `train_torch`/`extract_torch`/`merge_torch` CLI surface trimmed to only options
+they'll realistically ever override for this project, with everything else fixed at a sensible
+internal default (not removed as a capability — only removed as an exposed flag). The underlying
+`train()`/`extract_directory()`/`merge_video_frames()` function signatures are untouched (still
+fully parameterized, still what `tests/` calls directly).
+- `train_torch`: cut from 28 flags to 17. Removed (now fixed at their existing default):
+  `--num-workers` (0 — matches `dfl_torch/data.py`'s own recommendation given the small,
+  fully-RAM-cached faceset), `--val-fraction` (0.05), `--gan-dims` (16), `--lr` (5e-5),
+  `--warmup-steps` (1000), `--accumulation-steps` (1), `--log-every` (10), and all six
+  `--random-*` pixel-augmentation flags (blur/noise/jpeg/downsample/hsv-shift/shadow, all
+  off/0 — meant for degraded/varied real-world source footage, not a single clean recording).
+  Kept: paths, `resolution`/`e-dims`/`ae-dims`/`d-dims`/`d-mask-dims`, `batch-size`,
+  `total-steps`, `gan-power`, `lpips-weight`, `identity-weight`, `compile-model`, `device-type`,
+  `checkpoint-every`, `preview-every`, `resume-from` — all genuinely tuned per-run for this
+  project (VRAM fit, run length, quality-loss toggles, multi-day resume).
+- `extract_torch`: removed `--max-yaw`/`--max-pitch`/`--max-roll` (fixed at 75°/60°/45° —
+  generous pose-filter defaults, unlikely to need tightening for mostly-frontal podcast footage).
+- `merge_torch`: removed `--erode`/`--blur`/`--no-color-transfer` (fixed at 0/0/color-transfer-on
+  — the common case). More importantly, removed `--resolution`/`--e-dims`/`--ae-dims`/`--d-dims`/
+  `--d-mask-dims` entirely — these had to exactly match the training run's values or the
+  checkpoint would fail to load, a real footgun from re-typing them by hand. Fixed properly, not
+  just hidden: `dfl_torch/train.py`'s `_checkpoint_state()` now saves these dims into every
+  checkpoint, and `main.py`'s `process_merge_torch` reads them back from
+  `checkpoint["resolution"/"e_dims"/"ae_dims"/"d_dims"/"d_mask_dims"]` instead of CLI args.
+- Also deleted `dfl_torch/train.py`'s own standalone `argparse` `main()` — dead/duplicate CLI
+  surface (nothing called it; `main.py train_torch` calls `train()` directly, `tests/` call
+  `train()` directly) that would've needed to be kept in sync with `main.py`'s flags by hand.
+- All 200 tests still pass unchanged (they call `train()`/`extract_directory()`/
+  `merge_video_frames()` directly, not through either CLI).
